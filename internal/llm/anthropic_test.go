@@ -41,6 +41,7 @@ func TestAnthropicGenerateStructured(t *testing.T) {
 		writer.Header().Set("content-type", "application/json")
 		_, _ = writer.Write([]byte(`{
 			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 120, "output_tokens": 45},
 			"content": [
 				{
 					"type": "text",
@@ -65,7 +66,10 @@ func TestAnthropicGenerateStructured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"session_summary":"summary"}`; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
+	if want := `{"session_summary":"summary"}`; got.Text != want {
+		t.Fatalf("output = %q, want %q", got.Text, want)
+	}
+	if got.Usage != (Usage{InputTokens: 120, OutputTokens: 45}) {
+		t.Fatalf("usage = %+v, want {120 45}", got.Usage)
 	}
 }

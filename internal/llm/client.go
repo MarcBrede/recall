@@ -24,9 +24,27 @@ const (
 )
 
 // Client sends a prompt and JSON schema to an LLM provider and returns the
-// provider's schema-constrained JSON text.
+// provider's schema-constrained JSON text plus token usage.
 type Client interface {
-	GenerateStructured(ctx context.Context, req StructuredRequest) (string, error)
+	GenerateStructured(ctx context.Context, req StructuredRequest) (Response, error)
+}
+
+// Response is a structured generation result.
+type Response struct {
+	Text  string
+	Usage Usage
+}
+
+// Usage reports tokens billed for a single LLM call.
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// Add accumulates another call's usage, for summing across retry attempts.
+func (u *Usage) Add(other Usage) {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
 }
 
 type StructuredRequest struct {

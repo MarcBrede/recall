@@ -13,23 +13,28 @@ import (
 
 const maxSummaryAttempts = 2
 
-func WithProvider(ctx context.Context, provider string, model string, reasoningLevel string, session *trace.Session) (*Result, error) {
+func WithProvider(ctx context.Context, provider string, model string, reasoningLevel string, session *trace.Session) (*Result, llm.Usage, error) {
 	client, err := llm.New(provider)
 	if err != nil {
-		return nil, err
+		return nil, llm.Usage{}, err
 	}
 	return WithClient(ctx, client, model, reasoningLevel, session)
 }
 
-func WithClient(ctx context.Context, client llm.Client, model string, reasoningLevel string, session *trace.Session) (*Result, error) {
+// WithClient summarizes the session, retrying on validation failures. The
+// returned usage is the sum across every attempt, so it reflects total spend
+// even when a retry was needed.
+func WithClient(ctx context.Context, client llm.Client, model string, reasoningLevel string, session *trace.Session) (*Result, llm.Usage, error) {
+	var usage llm.Usage
+
 	schema, err := buildSchema(session)
 	if err != nil {
-		return nil, err
+		return nil, usage, err
 	}
 
 	input, err := prepare.RenderForLLM(session)
 	if err != nil {
-		return nil, err
+		return nil, usage, err
 	}
 
 	var lastErr error
@@ -39,7 +44,7 @@ func WithClient(ctx context.Context, client llm.Client, model string, reasoningL
 			prompt = retryPrompt(input, lastErr)
 		}
 
-		raw, err := client.GenerateStructured(ctx, llm.StructuredRequest{
+		response, err := client.GenerateStructured(ctx, llm.StructuredRequest{
 			Model:          model,
 			ReasoningLevel: reasoningLevel,
 			SystemPrompt:   systemPrompt(),
@@ -48,20 +53,21 @@ func WithClient(ctx context.Context, client llm.Client, model string, reasoningL
 			Schema:         schema,
 		})
 		if err != nil {
-			return nil, err
+			return nil, usage, err
 		}
-		if err := writeRawOutput(raw); err != nil {
-			return nil, err
+		usage.Add(response.Usage)
+		if err := writeRawOutput(response.Text); err != nil {
+			return nil, usage, err
 		}
 
-		result, err := decodeAndValidate(session, raw)
+		result, err := decodeAndValidate(session, response.Text)
 		if err == nil {
-			return result, nil
+			return result, usage, nil
 		}
 		lastErr = err
 	}
 
-	return nil, lastErr
+	return nil, usage, lastErr
 }
 
 func decodeAndValidate(session *trace.Session, raw string) (*Result, error) {

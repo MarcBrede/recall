@@ -1,0 +1,6 @@
+{
+  "go.alternateTools": {
+    "go": "/Users/marc/sdk/go1.22.6/bin/go",
+    "gopls": "/Users/marc/go/bin/gopls"
+  }
+}
