@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/marc-brede/recall/internal/obs"
 )
 
 const (
@@ -28,10 +31,16 @@ func newAnthropicClient(endpoint string, headers map[string]string, httpClient *
 	}
 }
 
-func (client anthropicClient) GenerateStructured(ctx context.Context, req StructuredRequest) (string, error) {
+func (client anthropicClient) GenerateStructured(ctx context.Context, req StructuredRequest) (Response, error) {
 	if err := validateStructuredRequest(req); err != nil {
-		return "", err
+		return Response{}, err
 	}
+
+	log := obs.From(ctx).With(
+		slog.String("provider", providerAnthropic),
+		slog.String("model", req.Model),
+	)
+	ctx = obs.Into(ctx, log)
 
 	outputConfig := map[string]any{
 		"format": map[string]any{
@@ -66,15 +75,36 @@ func (client anthropicClient) GenerateStructured(ctx context.Context, req Struct
 	var response anthropicResponse
 	err := postJSON(ctx, client.httpClient, client.endpoint, client.headers, payload, &response)
 	if err != nil {
-		return "", err
+		return Response{}, err
 	}
 
-	return response.structuredText()
+	log.Debug("llm response",
+		slog.String("stop_reason", response.StopReason),
+		slog.Int("input_tokens", response.Usage.InputTokens),
+		slog.Int("output_tokens", response.Usage.OutputTokens))
+
+	text, err := response.structuredText()
+	if err != nil {
+		return Response{}, err
+	}
+	return Response{
+		Text: text,
+		Usage: Usage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+		},
+	}, nil
 }
 
 type anthropicResponse struct {
 	Content    []anthropicContent `json:"content"`
 	StopReason string             `json:"stop_reason"`
+	Usage      anthropicUsage     `json:"usage"`
+}
+
+type anthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 type anthropicContent struct {

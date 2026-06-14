@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/marc-brede/recall/internal/obs"
 )
 
 const maxErrorBodyChars = 4096
@@ -27,15 +31,27 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 		request.Header.Set(key, value)
 	}
 
+	log := obs.From(ctx)
+	start := time.Now()
 	resp, err := client.Do(request)
 	if err != nil {
+		log.Debug("llm http request failed",
+			slog.String("error", err.Error()),
+			slog.Duration("elapsed", time.Since(start)))
 		return err
 	}
 	defer resp.Body.Close()
 
+	elapsed := time.Since(start)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Debug("llm http error response",
+			slog.Int("status", resp.StatusCode),
+			slog.Duration("elapsed", elapsed))
 		return fmt.Errorf("llm: request failed with %s: %s", resp.Status, readErrorBody(resp.Body))
 	}
+	log.Debug("llm http request completed",
+		slog.Int("status", resp.StatusCode),
+		slog.Duration("elapsed", elapsed))
 
 	decoder := json.NewDecoder(resp.Body)
 	return decoder.Decode(response)

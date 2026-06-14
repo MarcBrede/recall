@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+
+	"github.com/marc-brede/recall/internal/obs"
 )
 
 const (
@@ -26,10 +29,16 @@ func newOpenAIClient(endpoint string, headers map[string]string, httpClient *htt
 	}
 }
 
-func (client openAIClient) GenerateStructured(ctx context.Context, req StructuredRequest) (string, error) {
+func (client openAIClient) GenerateStructured(ctx context.Context, req StructuredRequest) (Response, error) {
 	if err := validateStructuredRequest(req); err != nil {
-		return "", err
+		return Response{}, err
 	}
+
+	log := obs.From(ctx).With(
+		slog.String("provider", providerOpenAI),
+		slog.String("model", req.Model),
+	)
+	ctx = obs.Into(ctx, log)
 
 	input := []map[string]string{}
 	if req.SystemPrompt != "" {
@@ -65,10 +74,25 @@ func (client openAIClient) GenerateStructured(ctx context.Context, req Structure
 	var response openAIResponse
 	err := postJSON(ctx, client.httpClient, client.endpoint, client.headers, payload, &response)
 	if err != nil {
-		return "", err
+		return Response{}, err
 	}
 
-	return response.structuredText()
+	log.Debug("llm response",
+		slog.String("status", response.Status),
+		slog.Int("input_tokens", response.Usage.InputTokens),
+		slog.Int("output_tokens", response.Usage.OutputTokens))
+
+	text, err := response.structuredText()
+	if err != nil {
+		return Response{}, err
+	}
+	return Response{
+		Text: text,
+		Usage: Usage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+		},
+	}, nil
 }
 
 type openAIResponse struct {
@@ -76,6 +100,12 @@ type openAIResponse struct {
 	Status            string                     `json:"status"`
 	IncompleteDetails *openAIIncompleteDetails   `json:"incomplete_details"`
 	Output            []openAIResponseOutputItem `json:"output"`
+	Usage             openAIUsage                `json:"usage"`
+}
+
+type openAIUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 type openAIIncompleteDetails struct {

@@ -34,7 +34,7 @@ func TestIngestLastSkipsAlreadyIndexedSession(t *testing.T) {
 }`)
 
 	output := captureStdout(t, func() {
-		if err := runIngestLast(1); err != nil {
+		if err := runIngestLast(1, false, false); err != nil {
 			t.Fatal(err)
 		}
 	})

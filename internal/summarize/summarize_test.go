@@ -28,12 +28,15 @@ func TestWithClientBuildsSchemaAndValidatesResult(t *testing.T) {
 	}
 	session := testSession()
 
-	result, err := WithClient(context.Background(), client, "test-model", "low", session)
+	result, usage, err := WithClient(context.Background(), client, "test-model", "low", session)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.SessionSummary != "session" {
 		t.Fatalf("session summary = %q", result.SessionSummary)
+	}
+	if usage != (llm.Usage{InputTokens: 10, OutputTokens: 5}) {
+		t.Fatalf("usage = %+v, want {10 5}", usage)
 	}
 	if client.reqs[0].Model != "test-model" {
 		t.Fatalf("model = %q", client.reqs[0].Model)
@@ -86,7 +89,7 @@ func TestWithClientRejectsMissingStepSummary(t *testing.T) {
 		}`},
 	}
 
-	_, err := WithClient(context.Background(), client, "test-model", "off", testSession())
+	_, _, err := WithClient(context.Background(), client, "test-model", "off", testSession())
 	if err == nil {
 		t.Fatal("err is nil")
 	}
@@ -128,12 +131,15 @@ func TestWithClientRetriesValidationFailure(t *testing.T) {
 		}`},
 	}
 
-	result, err := WithClient(context.Background(), client, "test-model", "off", testSession())
+	result, usage, err := WithClient(context.Background(), client, "test-model", "off", testSession())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.SectionSummaries["S1"].StepSummaries["S1.T2"] != "work" {
 		t.Fatalf("retry result did not include S1.T2")
+	}
+	if usage != (llm.Usage{InputTokens: 20, OutputTokens: 10}) {
+		t.Fatalf("usage = %+v, want {20 10} (summed across 2 attempts)", usage)
 	}
 	if got := len(client.reqs); got != 2 {
 		t.Fatalf("requests = %d, want 2", got)
@@ -148,16 +154,19 @@ type fakeClient struct {
 	raws []string
 }
 
-func (client *fakeClient) GenerateStructured(_ context.Context, req llm.StructuredRequest) (string, error) {
+func (client *fakeClient) GenerateStructured(_ context.Context, req llm.StructuredRequest) (llm.Response, error) {
 	client.reqs = append(client.reqs, req)
 	if len(client.raws) == 0 {
-		return "", nil
+		return llm.Response{}, nil
 	}
 	index := len(client.reqs) - 1
 	if index >= len(client.raws) {
 		index = len(client.raws) - 1
 	}
-	return client.raws[index], nil
+	return llm.Response{
+		Text:  client.raws[index],
+		Usage: llm.Usage{InputTokens: 10, OutputTokens: 5},
+	}, nil
 }
 
 func testSession() *trace.Session {

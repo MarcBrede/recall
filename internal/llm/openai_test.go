@@ -41,6 +41,7 @@ func TestOpenAIGenerateStructured(t *testing.T) {
 		writer.Header().Set("content-type", "application/json")
 		_, _ = writer.Write([]byte(`{
 			"status": "completed",
+			"usage": {"input_tokens": 200, "output_tokens": 60},
 			"output": [
 				{
 					"type": "message",
@@ -69,7 +70,10 @@ func TestOpenAIGenerateStructured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"session_summary":"summary"}`; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
+	if want := `{"session_summary":"summary"}`; got.Text != want {
+		t.Fatalf("output = %q, want %q", got.Text, want)
+	}
+	if got.Usage != (Usage{InputTokens: 200, OutputTokens: 60}) {
+		t.Fatalf("usage = %+v, want {200 60}", got.Usage)
 	}
 }
