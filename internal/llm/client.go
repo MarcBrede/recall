@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultTimeout         = 5 * time.Minute
-	defaultMaxOutputTokens = 16000
+	defaultMaxOutputTokens = 120000
 
 	providerAnthropic = "anthropic"
 	providerOpenAI    = "openai"
