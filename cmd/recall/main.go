@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -31,7 +30,7 @@ func main() {
 }
 
 func run(args []string) error {
-	configureLogging(os.Getenv("RECALL_LOG"), os.Getenv("RECALL_LOG_FORMAT"))
+	obs.Configure()
 
 	if len(args) == 0 {
 		return usageError()
@@ -220,7 +219,6 @@ func runIngest(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	applyIngestLogFlags(*verbose, *logJSON)
 
 	remaining := flags.Args()
 	if *last > 0 {
@@ -244,7 +242,7 @@ func runIngest(args []string) error {
 		return err
 	}
 
-	log, err := setupIngestLogging(loaded.Dir, *verbose, *logJSON)
+	log, err := obs.SetupIngest(loaded.Dir, *verbose, *logJSON)
 	if err != nil {
 		return err
 	}
@@ -272,53 +270,6 @@ func runIngest(args []string) error {
 		return fmt.Errorf("ingest: %d of %d segments failed", output.Failed, len(output.Results))
 	}
 	return nil
-}
-
-// applyIngestLogFlags refines the default logger from ingest flags. Flags raise
-// verbosity on top of any RECALL_LOG setting but never lower it. It runs before
-// config is loaded so early failures are still logged to stderr.
-func applyIngestLogFlags(verbose bool, logJSON bool) {
-	level, json := ingestStderrConfig(verbose, logJSON)
-	slog.SetDefault(obs.New(os.Stderr, obs.Options{Level: level, JSON: json}))
-}
-
-func ingestStderrConfig(verbose bool, logJSON bool) (slog.Level, bool) {
-	level := obs.ParseLevel(os.Getenv("RECALL_LOG"))
-	if verbose && level > slog.LevelInfo {
-		level = slog.LevelInfo
-	}
-	json := logJSON || strings.EqualFold(strings.TrimSpace(os.Getenv("RECALL_LOG_FORMAT")), "json")
-	return level, json
-}
-
-// setupIngestLogging installs the logger used for an ingest run. It tees stderr
-// (at the flag/env level) and an append-only NDJSON file under <dir>/logs that
-// always captures at least the info-level lifecycle. pid and run_id are bound
-// so concurrent runs sharing the day's file stay distinguishable.
-func setupIngestLogging(dir string, verbose bool, logJSON bool) (*slog.Logger, error) {
-	stderrLevel, json := ingestStderrConfig(verbose, logJSON)
-
-	fileLevel := slog.LevelInfo
-	if stderrLevel < fileLevel {
-		fileLevel = stderrLevel
-	}
-
-	file, err := obs.OpenLogFile(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	logger := obs.New(os.Stderr, obs.Options{
-		Level:     stderrLevel,
-		JSON:      json,
-		File:      file,
-		FileLevel: fileLevel,
-	}).With(
-		slog.Int("pid", os.Getpid()),
-		slog.String("run_id", obs.RunID()),
-	)
-	slog.SetDefault(logger)
-	return logger, nil
 }
 
 // logIngestCompleted emits a single summary line for a finished ingest run.
@@ -366,7 +317,7 @@ func runIngestLast(last int, verbose bool, logJSON bool) error {
 		return err
 	}
 
-	log, err := setupIngestLogging(loaded.Dir, verbose, logJSON)
+	log, err := obs.SetupIngest(loaded.Dir, verbose, logJSON)
 	if err != nil {
 		return err
 	}
@@ -616,16 +567,6 @@ func runDiscover(args []string) error {
 		return err
 	}
 	return writeJSON(os.Stdout, sessions)
-}
-
-// configureLogging installs the process logger. Logs always go to stderr so
-// stdout stays a clean JSON data channel for piping. Default level is warn,
-// which keeps piped commands quiet while still surfacing failures.
-func configureLogging(level string, format string) {
-	slog.SetDefault(obs.New(os.Stderr, obs.Options{
-		Level: obs.ParseLevel(level),
-		JSON:  strings.EqualFold(strings.TrimSpace(format), "json"),
-	}))
 }
 
 func loadConfig() (config.Loaded, error) {
