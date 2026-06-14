@@ -34,6 +34,9 @@ func TestLoadCreatesRecallDirAndDefaultConfig(t *testing.T) {
 	if loaded.Config.LLM.Reasoning.Level != DefaultReasoningLevel {
 		t.Fatalf("reasoning level = %q, want %q", loaded.Config.LLM.Reasoning.Level, DefaultReasoningLevel)
 	}
+	if loaded.Config.LLM.Auth.Type != DefaultAuthType {
+		t.Fatalf("auth type = %q, want %q", loaded.Config.LLM.Auth.Type, DefaultAuthType)
+	}
 	if loaded.Config.Ingest.Concurrency != DefaultConcurrency {
 		t.Fatalf("ingest concurrency = %d, want %d", loaded.Config.Ingest.Concurrency, DefaultConcurrency)
 	}
@@ -87,6 +90,66 @@ func TestValidateLLMRequiresProviderAndModel(t *testing.T) {
 	config := Default()
 	config.LLM.Provider = ""
 	config.LLM.Model = ""
+
+	err := config.ValidateLLM("/tmp/config.json")
+	if err == nil {
+		t.Fatal("err is nil")
+	}
+}
+
+func TestLoadReadsLLMTransportConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	recallDir := filepath.Join(home, DirName)
+	if err := os.Mkdir(recallDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeConfig(filepath.Join(recallDir, FileName), Config{
+		ConfigVersion: 1,
+		LLM: LLMConfig{
+			Provider: "anthropic",
+			Model:    "claude-test",
+			Reasoning: ReasoningConfig{
+				Level: "high",
+			},
+			BaseURL: " https://gateway.test ",
+			Headers: map[string]string{
+				" source ": " recall-test ",
+			},
+			Auth: LLMAuthConfig{
+				Type:    AuthHeaderCommand,
+				Command: []string{" token-command ", " --http-header "},
+			},
+		},
+		Ingest: IngestConfig{
+			Concurrency: 1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load("/ignored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Config.ValidateLLM(loaded.Path); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := loaded.Config.LLM.BaseURL, "https://gateway.test"; got != want {
+		t.Fatalf("base_url = %q, want %q", got, want)
+	}
+	if got, want := loaded.Config.LLM.Headers["source"], "recall-test"; got != want {
+		t.Fatalf("header source = %q, want %q", got, want)
+	}
+	if got, want := loaded.Config.LLM.Auth.Command[1], "--http-header"; got != want {
+		t.Fatalf("auth command arg = %q, want %q", got, want)
+	}
+}
+
+func TestValidateLLMRequiresHeaderCommand(t *testing.T) {
+	config := Default()
+	config.LLM.Auth = LLMAuthConfig{Type: AuthHeaderCommand}
 
 	err := config.ValidateLLM("/tmp/config.json")
 	if err == nil {

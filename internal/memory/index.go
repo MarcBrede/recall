@@ -116,6 +116,24 @@ func IndexKey(source trace.Source, externalID string, segmentIndex int) string {
 	return string(source) + ":" + externalID + ":" + strconv.Itoa(segmentIndex)
 }
 
+func (index *Index) Entry(session *trace.Session) (IndexEntry, bool) {
+	if index == nil || session == nil {
+		return IndexEntry{}, false
+	}
+	entry, ok := index.Entries[IndexKey(session.Source, session.ExternalID, session.SegmentIndex)]
+	return entry, ok
+}
+
+func ResolveMemoryDir(recallDir string, entry IndexEntry) string {
+	if strings.TrimSpace(entry.MemoryDir) == "" {
+		return ""
+	}
+	if filepath.IsAbs(entry.MemoryDir) {
+		return entry.MemoryDir
+	}
+	return filepath.Join(recallDir, filepath.FromSlash(entry.MemoryDir))
+}
+
 func (index *Index) IsIndexed(session *trace.Session) bool {
 	if index == nil || session == nil || session.EndedAt.IsZero() {
 		return false

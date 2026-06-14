@@ -121,6 +121,57 @@ func TestParserSplitsCompactedSessions(t *testing.T) {
 	assertEvent(t, sessions[1].Events[0], trace.EventHumanUser, "user.text", 5, "second request", "", "")
 }
 
+func TestParserSkipsMCPBookkeepingButKeepsSkillCommands(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	input := `{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"<command-message>remember</command-message>\n<command-name>/remember</command-name>\n<command-args>what did I do yesterday?</command-args>"},"uuid":"event-remember-001","timestamp":"2026-01-02T03:04:05.000Z","cwd":"/workspace/example","sessionId":"test-session-001","version":"test-version"}
+{"parentUuid":"event-remember-001","isSidechain":false,"promptId":"prompt-001","type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: local command output follows.</local-command-caveat>"},"isMeta":true,"uuid":"event-caveat-001","timestamp":"2026-01-02T03:04:06.000Z","cwd":"/workspace/example","sessionId":"test-session-001","version":"test-version"}
+{"parentUuid":"event-caveat-001","isSidechain":false,"promptId":"prompt-001","type":"user","message":{"role":"user","content":"<command-name>/mcp</command-name>\n<command-message>mcp</command-message>\n<command-args></command-args>"},"uuid":"event-mcp-001","timestamp":"2026-01-02T03:04:07.000Z","cwd":"/workspace/example","sessionId":"test-session-001","version":"test-version"}
+{"parentUuid":"event-mcp-001","isSidechain":false,"promptId":"prompt-001","type":"user","message":{"role":"user","content":"<local-command-stdout>Authentication successful. Connected to datadog.</local-command-stdout>"},"uuid":"event-stdout-001","timestamp":"2026-01-02T03:04:08.000Z","cwd":"/workspace/example","sessionId":"test-session-001","version":"test-version"}
+{"parentUuid":"event-stdout-001","isSidechain":false,"type":"user","message":{"role":"user","content":"continue the investigation"},"uuid":"event-user-001","timestamp":"2026-01-02T03:04:09.000Z","cwd":"/workspace/example","sessionId":"test-session-001","version":"test-version"}
+`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := Parser{}.Parse(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(sessions); got != 1 {
+		t.Fatalf("sessions = %d, want 1", got)
+	}
+
+	events := sessions[0].Events
+	if got := len(events); got != 2 {
+		t.Fatalf("events = %d, want 2", got)
+	}
+	assertEvent(t, events[0], trace.EventHumanUser, "user.text", 1, "<command-message>remember</command-message>\n<command-name>/remember</command-name>\n<command-args>what did I do yesterday?</command-args>", "", "")
+	assertEvent(t, events[1], trace.EventHumanUser, "user.text", 5, "continue the investigation", "", "")
+}
+
+func TestParserStoresForkedFromSessionID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	input := `{"parentUuid":null,"type":"user","message":{"role":"user","content":"start from here"},"uuid":"event-user-001","timestamp":"2026-01-02T03:04:05.000Z","cwd":"/workspace/example","sessionId":"child-session-001","forkedFrom":{"sessionId":"parent-session-001","messageUuid":"event-user-001"}}
+{"parentUuid":"event-user-001","type":"assistant","message":{"role":"assistant","model":"test-model","content":[{"type":"text","text":"continuing"}]},"uuid":"event-assistant-001","timestamp":"2026-01-02T03:04:06.000Z","cwd":"/workspace/example","sessionId":"child-session-001","forkedFrom":{"sessionId":"parent-session-001","messageUuid":"event-assistant-001"}}
+`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := Parser{}.Parse(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(sessions); got != 1 {
+		t.Fatalf("sessions = %d, want 1", got)
+	}
+	if got := sessions[0].Metadata["forked_from_session_id"]; got != "parent-session-001" {
+		t.Fatalf("forked_from_session_id = %v, want parent-session-001", got)
+	}
+}
+
 func assertEvent(t *testing.T, event trace.Event, kind trace.EventKind, rawType string, sourceLine int, text string, toolName string, toolCallID string) {
 	t.Helper()
 	if event.Kind != kind {

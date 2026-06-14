@@ -26,6 +26,34 @@ func RenderForLLM(session *trace.Session) (string, error) {
 	return renderSession(*session), nil
 }
 
+func RenderSectionForLLM(session *trace.Session, section *trace.Section) (string, error) {
+	if session == nil {
+		return "", errors.New("prepare: nil session")
+	}
+	if section == nil {
+		return "", errors.New("prepare: nil section")
+	}
+
+	singleSection := trace.Session{
+		Source:               session.Source,
+		ExternalID:           session.ExternalID,
+		SegmentIndex:         session.SegmentIndex,
+		SourceFile:           session.SourceFile,
+		SourceStartLine:      session.SourceStartLine,
+		SourceEndLine:        session.SourceEndLine,
+		ContentStartLine:     session.ContentStartLine,
+		CompactionSummary:    session.CompactionSummary,
+		CompactionSourceLine: session.CompactionSourceLine,
+		CWD:                  session.CWD,
+		GitBranch:            session.GitBranch,
+		StartedAt:            session.StartedAt,
+		EndedAt:              session.EndedAt,
+		Sections:             []trace.Section{*section},
+		Metadata:             session.Metadata,
+	}
+	return renderSession(singleSection), nil
+}
+
 func splitSession(flat *trace.FlatSession) trace.Session {
 	session := trace.Session{
 		Source:               flat.Source,

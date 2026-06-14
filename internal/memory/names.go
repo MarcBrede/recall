@@ -42,6 +42,10 @@ func sessionDirName(session *trace.Session) string {
 	return fmt.Sprintf("%s-%s-%s-seg%03d", timePart, source, id, session.SegmentIndex)
 }
 
+func SessionDir(recallDir string, session *trace.Session) string {
+	return filepath.Join(recallDir, "sessions", sessionDirName(session))
+}
+
 func sectionFileName(index int) string {
 	return sectionDisplayID(index) + ".md"
 }

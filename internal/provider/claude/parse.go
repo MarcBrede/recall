@@ -172,6 +172,7 @@ type record struct {
 	Type        string        `json:"type"`
 	UUID        string        `json:"uuid"`
 	ParentUUID  string        `json:"parentUuid"`
+	ForkedFrom  *forkedFrom   `json:"forkedFrom"`
 	Timestamp   string        `json:"timestamp"`
 	CWD         string        `json:"cwd"`
 	SessionID   string        `json:"sessionId"`
@@ -182,6 +183,10 @@ type record struct {
 	IsSidechain bool          `json:"isSidechain"`
 	Content     string        `json:"content"`
 	Message     claudeMessage `json:"message"`
+}
+
+type forkedFrom struct {
+	SessionID string `json:"sessionId"`
 }
 
 type claudeMessage struct {
@@ -221,6 +226,9 @@ func noteRecordMetadata(session *trace.FlatSession, rec record, timestamp time.T
 	setMetadata(session.Metadata, "entrypoint", rec.Entrypoint)
 	if rec.IsSidechain {
 		session.Metadata["is_sidechain"] = true
+	}
+	if rec.ForkedFrom != nil {
+		setMetadataIfAbsent(session.Metadata, "forked_from_session_id", rec.ForkedFrom.SessionID)
 	}
 
 	noteTimestamp(session, timestamp)
@@ -369,6 +377,16 @@ func setMetadata(metadata trace.Metadata, key string, value string) {
 	metadata[key] = value
 }
 
+func setMetadataIfAbsent(metadata trace.Metadata, key string, value string) {
+	if value == "" {
+		return
+	}
+	if _, exists := metadata[key]; exists {
+		return
+	}
+	metadata[key] = value
+}
+
 func contentString(raw json.RawMessage) (string, bool) {
 	var text string
 	if err := json.Unmarshal(raw, &text); err != nil {
@@ -392,7 +410,15 @@ func shouldSkipUserText(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	return strings.HasPrefix(trimmed, "Base directory for this skill:") ||
 		strings.HasPrefix(trimmed, "<task-notification>") ||
+		isLocalCommandBookkeeping(trimmed) ||
 		strings.HasPrefix(trimmed, "This session is being continued from a previous conversation that ran out of context.")
+}
+
+func isLocalCommandBookkeeping(text string) bool {
+	return strings.HasPrefix(text, "<local-command-caveat>") ||
+		strings.HasPrefix(text, "<local-command-stdout>") ||
+		strings.HasPrefix(text, "<local-command-stderr>") ||
+		strings.Contains(text, "<command-name>/mcp</command-name>")
 }
 
 func continuationSummaryText(rec record) string {

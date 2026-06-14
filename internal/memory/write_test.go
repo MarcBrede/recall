@@ -32,6 +32,11 @@ func TestWriteSessionWritesMemoryDirectory(t *testing.T) {
 			},
 		},
 		GeneratedAt: generatedAt,
+		SectionMetadata: map[string]SectionMetadata{
+			"S1": {
+				InputHash: "sha256:test-section-input",
+			},
+		},
 	}, session, result)
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +64,9 @@ func TestWriteSessionWritesMemoryDirectory(t *testing.T) {
 	if decoded.SourceStartLine != 3 || decoded.SourceEndLine != 18 {
 		t.Fatalf("source lines = %d-%d, want 3-18", decoded.SourceStartLine, decoded.SourceEndLine)
 	}
+	if decoded.ForkedFromSessionID != "parent-session-001" {
+		t.Fatalf("forked_from_session_id = %q, want parent-session-001", decoded.ForkedFromSessionID)
+	}
 	if decoded.ContentStartLine != 7 {
 		t.Fatalf("content_start_line = %d, want 7", decoded.ContentStartLine)
 	}
@@ -67,6 +75,21 @@ func TestWriteSessionWritesMemoryDirectory(t *testing.T) {
 	}
 	if decoded.LLM.Model != "claude-opus-4-8" {
 		t.Fatalf("llm model = %q", decoded.LLM.Model)
+	}
+	if decoded.Summaries.SessionSummary != "Session summary." {
+		t.Fatalf("session summary = %q", decoded.Summaries.SessionSummary)
+	}
+	if decoded.Summaries.SectionSummaries["S1"].StepSummaries["S1.T2"] != "Assistant answers the question." {
+		t.Fatalf("missing structured step summary in metadata")
+	}
+	if decoded.Sections["S1"].InputHash != "sha256:test-section-input" {
+		t.Fatalf("section input hash = %q", decoded.Sections["S1"].InputHash)
+	}
+	if decoded.Sections["S1"].Status != SectionStatusOpen {
+		t.Fatalf("section status = %q, want open", decoded.Sections["S1"].Status)
+	}
+	if decoded.Sections["S1"].Path != "sections/S001.md" {
+		t.Fatalf("section path = %q", decoded.Sections["S1"].Path)
 	}
 
 	sessionMarkdown := readFile(t, filepath.Join(wantDir, "session.md"))
@@ -80,6 +103,7 @@ func TestWriteSessionWritesMemoryDirectory(t *testing.T) {
 		`segment_index: 2`,
 		`source_start_line: 3`,
 		`source_end_line: 18`,
+		`forked_from_session_id: "parent-session-001"`,
 		`content_start_line: 7`,
 		`compaction_source_line: 3`,
 		`last_event_at: "2026-01-02T03:06:30Z"`,
@@ -142,6 +166,9 @@ func testSession() *trace.Session {
 		CWD:                  "/workspace/project",
 		StartedAt:            startedAt,
 		EndedAt:              lastEventAt,
+		Metadata: trace.Metadata{
+			"forked_from_id": "parent-session-001",
+		},
 		Sections: []trace.Section{
 			{
 				ID:        "S1",

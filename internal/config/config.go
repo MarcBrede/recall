@@ -16,6 +16,11 @@ const (
 	DefaultModel          = "claude-opus-4-8"
 	DefaultReasoningLevel = "high"
 	DefaultConcurrency    = 10
+	DefaultAuthType       = "provider_env"
+
+	AuthProviderEnv   = "provider_env"
+	AuthHeaderEnv     = "header_env"
+	AuthHeaderCommand = "header_command"
 )
 
 type Loaded struct {
@@ -31,13 +36,22 @@ type Config struct {
 }
 
 type LLMConfig struct {
-	Provider  string          `json:"provider"`
-	Model     string          `json:"model"`
-	Reasoning ReasoningConfig `json:"reasoning"`
+	Provider  string            `json:"provider"`
+	Model     string            `json:"model"`
+	Reasoning ReasoningConfig   `json:"reasoning"`
+	BaseURL   string            `json:"base_url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Auth      LLMAuthConfig     `json:"auth,omitempty"`
 }
 
 type ReasoningConfig struct {
 	Level string `json:"level"`
+}
+
+type LLMAuthConfig struct {
+	Type    string   `json:"type,omitempty"`
+	Env     string   `json:"env,omitempty"`
+	Command []string `json:"command,omitempty"`
 }
 
 type IngestConfig struct {
@@ -79,6 +93,9 @@ func Default() Config {
 			Reasoning: ReasoningConfig{
 				Level: DefaultReasoningLevel,
 			},
+			Auth: LLMAuthConfig{
+				Type: DefaultAuthType,
+			},
 		},
 		Ingest: IngestConfig{
 			Concurrency: DefaultConcurrency,
@@ -96,6 +113,24 @@ func (config Config) ValidateLLM(path string) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: set %s in %s", strings.Join(missing, " and "), path)
+	}
+	for key, value := range config.LLM.Headers {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("config: llm.headers must contain non-empty header names and values in %s", path)
+		}
+	}
+	switch strings.TrimSpace(config.LLM.Auth.Type) {
+	case "", AuthProviderEnv:
+	case AuthHeaderEnv:
+		if strings.TrimSpace(config.LLM.Auth.Env) == "" {
+			return fmt.Errorf("config: llm.auth.env is required when llm.auth.type is %q in %s", AuthHeaderEnv, path)
+		}
+	case AuthHeaderCommand:
+		if len(config.LLM.Auth.Command) == 0 || strings.TrimSpace(config.LLM.Auth.Command[0]) == "" {
+			return fmt.Errorf("config: llm.auth.command is required when llm.auth.type is %q in %s", AuthHeaderCommand, path)
+		}
+	default:
+		return fmt.Errorf("config: unsupported llm.auth.type %q in %s", config.LLM.Auth.Type, path)
 	}
 	return nil
 }
@@ -147,9 +182,39 @@ func readFile(path string) (Config, error) {
 	}
 	config.LLM.Provider = strings.TrimSpace(config.LLM.Provider)
 	config.LLM.Model = strings.TrimSpace(config.LLM.Model)
+	config.LLM.BaseURL = strings.TrimSpace(config.LLM.BaseURL)
 	config.LLM.Reasoning.Level = strings.TrimSpace(config.LLM.Reasoning.Level)
 	if config.LLM.Reasoning.Level == "" {
 		config.LLM.Reasoning.Level = "off"
 	}
+	config.LLM.Auth.Type = strings.TrimSpace(config.LLM.Auth.Type)
+	if config.LLM.Auth.Type == "" {
+		config.LLM.Auth.Type = DefaultAuthType
+	}
+	config.LLM.Auth.Env = strings.TrimSpace(config.LLM.Auth.Env)
+	config.LLM.Auth.Command = compactStrings(config.LLM.Auth.Command)
+	config.LLM.Headers = compactHeaders(config.LLM.Headers)
 	return config, nil
+}
+
+func compactStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed = append(trimmed, strings.TrimSpace(value))
+	}
+	return trimmed
+}
+
+func compactHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	trimmed := make(map[string]string, len(headers))
+	for key, value := range headers {
+		trimmed[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return trimmed
 }

@@ -16,9 +16,11 @@ import (
 const metadataFileName = "metadata.json"
 
 type WriteOptions struct {
-	RecallDir   string
-	Config      config.Config
-	GeneratedAt time.Time
+	RecallDir       string
+	Config          config.Config
+	GeneratedAt     time.Time
+	PreviousDir     string
+	SectionMetadata map[string]SectionMetadata
 }
 
 type WriteResult struct {
@@ -29,28 +31,45 @@ type WriteResult struct {
 }
 
 type Metadata struct {
-	SchemaVersion        int            `json:"schema_version"`
-	Source               trace.Source   `json:"source"`
-	ExternalSessionID    string         `json:"external_session_id"`
-	SegmentIndex         int            `json:"segment_index"`
-	SourceFile           string         `json:"source_file"`
-	SourceStartLine      int            `json:"source_start_line,omitempty"`
-	SourceEndLine        int            `json:"source_end_line,omitempty"`
-	ContentStartLine     int            `json:"content_start_line,omitempty"`
-	CompactionSourceLine int            `json:"compaction_source_line,omitempty"`
-	CWD                  string         `json:"cwd,omitempty"`
-	GitBranch            string         `json:"git_branch,omitempty"`
-	StartedAt            string         `json:"started_at,omitempty"`
-	LastEventAt          string         `json:"last_event_at,omitempty"`
-	GeneratedAt          string         `json:"generated_at"`
-	LLM                  LLMMetadata    `json:"llm"`
-	SourceMetadata       trace.Metadata `json:"source_metadata,omitempty"`
+	SchemaVersion        int                        `json:"schema_version"`
+	Source               trace.Source               `json:"source"`
+	ExternalSessionID    string                     `json:"external_session_id"`
+	SegmentIndex         int                        `json:"segment_index"`
+	SourceFile           string                     `json:"source_file"`
+	ForkedFromSessionID  string                     `json:"forked_from_session_id,omitempty"`
+	SourceStartLine      int                        `json:"source_start_line,omitempty"`
+	SourceEndLine        int                        `json:"source_end_line,omitempty"`
+	ContentStartLine     int                        `json:"content_start_line,omitempty"`
+	CompactionSourceLine int                        `json:"compaction_source_line,omitempty"`
+	CWD                  string                     `json:"cwd,omitempty"`
+	GitBranch            string                     `json:"git_branch,omitempty"`
+	StartedAt            string                     `json:"started_at,omitempty"`
+	LastEventAt          string                     `json:"last_event_at,omitempty"`
+	GeneratedAt          string                     `json:"generated_at"`
+	LLM                  LLMMetadata                `json:"llm"`
+	SourceMetadata       trace.Metadata             `json:"source_metadata,omitempty"`
+	Summaries            summarize.Result           `json:"summaries"`
+	Sections             map[string]SectionMetadata `json:"sections,omitempty"`
 }
 
 type LLMMetadata struct {
 	Provider       string `json:"provider"`
 	Model          string `json:"model"`
 	ReasoningLevel string `json:"reasoning_level"`
+}
+
+const (
+	SectionStatusOpen  = "open"
+	SectionStatusFinal = "final"
+)
+
+type SectionMetadata struct {
+	StartLine   int    `json:"start_line"`
+	EndLine     int    `json:"end_line"`
+	LastEventAt string `json:"last_event_at,omitempty"`
+	Status      string `json:"status"`
+	InputHash   string `json:"input_hash,omitempty"`
+	Path        string `json:"path"`
 }
 
 func WriteSession(opts WriteOptions, session *trace.Session, result *summarize.Result) (*WriteResult, error) {
@@ -100,6 +119,11 @@ func WriteSession(opts WriteOptions, session *trace.Session, result *summarize.R
 		return nil, err
 	}
 	keepTemp = true
+	if opts.PreviousDir != "" && opts.PreviousDir != targetDir {
+		if err := os.RemoveAll(opts.PreviousDir); err != nil {
+			return nil, err
+		}
+	}
 
 	writeResult.Dir = targetDir
 	writeResult.MetadataPath = filepath.Join(targetDir, metadataFileName)
@@ -116,7 +140,7 @@ func writeSessionDir(dir string, opts WriteOptions, session *trace.Session, resu
 		sectionPathByID[section.ID] = filepath.Join(sectionsDirName, sectionFileName(i+1))
 	}
 
-	metadata := metadataFromSession(opts, session)
+	metadata := metadataFromSession(opts, session, result, sectionPathByID)
 	if err := writeJSONFile(filepath.Join(dir, metadataFileName), metadata); err != nil {
 		return nil, err
 	}
@@ -146,13 +170,14 @@ func writeSessionDir(dir string, opts WriteOptions, session *trace.Session, resu
 	}, nil
 }
 
-func metadataFromSession(opts WriteOptions, session *trace.Session) Metadata {
+func metadataFromSession(opts WriteOptions, session *trace.Session, result *summarize.Result, sectionPathByID map[string]string) Metadata {
 	return Metadata{
 		SchemaVersion:        1,
 		Source:               session.Source,
 		ExternalSessionID:    session.ExternalID,
 		SegmentIndex:         session.SegmentIndex,
 		SourceFile:           session.SourceFile,
+		ForkedFromSessionID:  forkedFromSessionID(session.Metadata),
 		SourceStartLine:      session.SourceStartLine,
 		SourceEndLine:        session.SourceEndLine,
 		ContentStartLine:     session.ContentStartLine,
@@ -168,7 +193,63 @@ func metadataFromSession(opts WriteOptions, session *trace.Session) Metadata {
 			ReasoningLevel: opts.Config.LLM.Reasoning.Level,
 		},
 		SourceMetadata: session.Metadata,
+		Summaries:      *result,
+		Sections:       sectionMetadataFromSession(opts, session, sectionPathByID),
 	}
+}
+
+func forkedFromSessionID(metadata trace.Metadata) string {
+	if metadata == nil {
+		return ""
+	}
+	if value, ok := metadata["forked_from_session_id"].(string); ok && value != "" {
+		return value
+	}
+	if value, ok := metadata["forked_from_id"].(string); ok && value != "" {
+		return value
+	}
+	return ""
+}
+
+func sectionMetadataFromSession(opts WriteOptions, session *trace.Session, sectionPathByID map[string]string) map[string]SectionMetadata {
+	sections := make(map[string]SectionMetadata, len(session.Sections))
+	for i, section := range session.Sections {
+		status := SectionStatusFinal
+		if i == len(session.Sections)-1 {
+			status = SectionStatusOpen
+		}
+		metadata := opts.SectionMetadata[section.ID]
+		if metadata.Status == "" {
+			metadata.Status = status
+		}
+		metadata.StartLine = section.StartLine
+		metadata.EndLine = section.EndLine
+		metadata.LastEventAt = formatTime(section.EndedAt)
+		metadata.Path = filepath.ToSlash(sectionPathByID[section.ID])
+		sections[section.ID] = metadata
+	}
+	return sections
+}
+
+func LoadMetadata(dir string) (*Metadata, error) {
+	if dir == "" {
+		return nil, errors.New("memory: metadata dir is required")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, metadataFileName))
+	if err != nil {
+		return nil, err
+	}
+	var metadata Metadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nil, fmt.Errorf("memory: parse metadata: %w", err)
+	}
+	if metadata.Sections == nil {
+		metadata.Sections = map[string]SectionMetadata{}
+	}
+	if metadata.Summaries.SectionSummaries == nil {
+		metadata.Summaries.SectionSummaries = map[string]summarize.SectionResult{}
+	}
+	return &metadata, nil
 }
 
 func writeJSONFile(path string, value any) error {

@@ -17,6 +17,11 @@ type wireResult struct {
 	SectionSummaries  []wireSectionResult `json:"section_summaries"`
 }
 
+type wireSessionResult struct {
+	SessionSummary    string `json:"session_summary"`
+	CompactionSummary string `json:"compaction_summary"`
+}
+
 type wireSectionResult struct {
 	ID            string           `json:"id"`
 	Summary       string           `json:"summary"`

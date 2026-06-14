@@ -17,6 +17,7 @@ func RenderSessionMarkdown(session *trace.Session, result *summarize.Result, sec
 	writeYAMLString(&builder, "id", session.ExternalID)
 	writeYAMLString(&builder, "source", string(session.Source))
 	writeYAMLString(&builder, "source_file", session.SourceFile)
+	writeYAMLString(&builder, "forked_from_session_id", forkedFromSessionID(session.Metadata))
 	writeYAMLIntValue(&builder, "segment_index", session.SegmentIndex)
 	writeYAMLInt(&builder, "source_start_line", session.SourceStartLine)
 	writeYAMLInt(&builder, "source_end_line", session.SourceEndLine)
