@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marc-brede/recall/internal/memory"
+	"github.com/marc-brede/recall/internal/trace"
 )
 
 func TestIngestLastSkipsAlreadyIndexedSession(t *testing.T) {
@@ -30,7 +32,7 @@ func TestIngestLastSkipsAlreadyIndexedSession(t *testing.T) {
       "source_end_line": 2,
       "session_started_at": "2026-01-02T03:04:05Z",
       "session_last_event_at": "2026-01-02T03:06:30Z",
-      "memory_dir": "sessions/2026-01-02T030630Z-codex-session-001-seg000",
+      "memory_dir": "sessions/2026-01-02T030405Z-codex-session-001",
       "indexed_at": "2026-01-03T04:05:06Z"
     }
   }
@@ -82,7 +84,7 @@ func TestIngestDryRunLastPlansAlreadyIndexedSession(t *testing.T) {
       "source_end_line": 2,
       "session_started_at": "2026-01-02T03:04:05Z",
       "session_last_event_at": "2026-01-02T03:06:30Z",
-      "memory_dir": "sessions/2026-01-02T030630Z-codex-session-001-seg000",
+      "memory_dir": "sessions/2026-01-02T030405Z-codex-session-001",
       "indexed_at": "2026-01-03T04:05:06Z"
     }
   }
@@ -108,6 +110,72 @@ func TestSectionListSummaryCollapsesNewSegment(t *testing.T) {
 	want := "all 3 sections (S1-S3, open S3)"
 	if got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestSaveSuccessfulIngestResultsMergesWithLatestIndex(t *testing.T) {
+	recallDir := filepath.Join(t.TempDir(), ".recall")
+	writeTestFile(t, filepath.Join(recallDir, "sessions", ".index.json"), `{
+  "schema_version": 1,
+  "entries": {
+    "codex:existing-session:0": {
+      "source": "codex",
+      "external_id": "existing-session",
+      "segment_index": 0,
+      "source_file": "/tmp/existing.jsonl",
+      "session_last_event_at": "2026-01-02T03:06:30Z",
+      "memory_dir": "sessions/existing",
+      "indexed_at": "2026-01-03T04:05:06Z"
+    }
+  }
+}`)
+
+	newDir := filepath.Join(recallDir, "sessions", "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	eventTime := time.Date(2026, 1, 4, 5, 6, 7, 0, time.UTC)
+	results := []ingestBatchResult{
+		{
+			Status: "succeeded",
+			Write: &memory.WriteResult{
+				Dir: newDir,
+			},
+			session: &trace.Session{
+				Source:       trace.SourceCodex,
+				ExternalID:   "new-session",
+				SegmentIndex: 2,
+				SourceFile:   "/tmp/new.jsonl",
+				EndedAt:      eventTime,
+			},
+		},
+		{
+			Status: "failed",
+			session: &trace.Session{
+				Source:       trace.SourceCodex,
+				ExternalID:   "failed-session",
+				SegmentIndex: 0,
+				EndedAt:      eventTime,
+			},
+		},
+	}
+
+	if err := saveSuccessfulIngestResults(recallDir, results, eventTime); err != nil {
+		t.Fatal(err)
+	}
+
+	index, err := memory.LoadIndex(recallDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := index.Entries[memory.IndexKey(trace.SourceCodex, "existing-session", 0)]; !ok {
+		t.Fatal("existing index entry was lost")
+	}
+	if _, ok := index.Entries[memory.IndexKey(trace.SourceCodex, "new-session", 2)]; !ok {
+		t.Fatal("new successful index entry was not saved")
+	}
+	if _, ok := index.Entries[memory.IndexKey(trace.SourceCodex, "failed-session", 0)]; ok {
+		t.Fatal("failed index entry was saved")
 	}
 }
 

@@ -11,6 +11,11 @@ type SectionResult struct {
 	StepSummaries map[string]string `json:"step_summaries"`
 }
 
+type SegmentSummary struct {
+	ID      string
+	Summary string
+}
+
 type wireResult struct {
 	SessionSummary    string              `json:"session_summary"`
 	CompactionSummary string              `json:"compaction_summary"`
@@ -20,6 +25,10 @@ type wireResult struct {
 type wireSessionResult struct {
 	SessionSummary    string `json:"session_summary"`
 	CompactionSummary string `json:"compaction_summary"`
+}
+
+type wireAggregateSessionResult struct {
+	SessionSummary string `json:"session_summary"`
 }
 
 type wireSectionResult struct {

@@ -10,6 +10,7 @@ import (
 const schemaName = "recall_memory_summaries"
 const sectionSchemaName = "recall_memory_section_summary"
 const sessionSchemaName = "recall_memory_session_summary"
+const aggregateSessionSchemaName = "recall_memory_aggregate_session_summary"
 
 func buildSchema(session *trace.Session) (map[string]any, error) {
 	if session == nil {
@@ -97,6 +98,15 @@ func buildSessionSchema(session *trace.Session) (map[string]any, error) {
 		},
 		[]string{"session_summary", "compaction_summary"},
 	), nil
+}
+
+func buildAggregateSessionSchema() map[string]any {
+	return objectSchema(
+		map[string]any{
+			"session_summary": map[string]any{"type": "string"},
+		},
+		[]string{"session_summary"},
+	)
 }
 
 func objectSchema(properties map[string]any, required []string) map[string]any {

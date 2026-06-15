@@ -12,15 +12,20 @@ import (
 
 const (
 	sessionFileName = "session.md"
+	segmentFileName = "segment.md"
+	segmentsDirName = "segments"
 	sectionsDirName = "sections"
 )
 
 func sessionDirName(session *trace.Session) string {
-	timestamp := session.EndedAt
-	if timestamp.IsZero() {
-		timestamp = session.StartedAt
-	}
+	return sessionDirNameFor(session, session.StartedAt, session.EndedAt)
+}
 
+func sessionDirNameFor(session *trace.Session, startedAt time.Time, endedAt time.Time) string {
+	timestamp := startedAt
+	if timestamp.IsZero() {
+		timestamp = endedAt
+	}
 	timePart := "unknown-time"
 	if !timestamp.IsZero() {
 		timePart = timestamp.UTC().Format("2006-01-02T150405Z")
@@ -39,11 +44,27 @@ func sessionDirName(session *trace.Session) string {
 		id = "unknown-id"
 	}
 
-	return fmt.Sprintf("%s-%s-%s-seg%03d", timePart, source, id, session.SegmentIndex)
+	return fmt.Sprintf("%s-%s-%s", timePart, source, id)
+}
+
+func segmentDirName(index int) string {
+	return fmt.Sprintf("seg%03d", index)
 }
 
 func SessionDir(recallDir string, session *trace.Session) string {
-	return filepath.Join(recallDir, "sessions", sessionDirName(session))
+	return SessionDirForTimes(recallDir, session, session.StartedAt, session.EndedAt)
+}
+
+func SessionDirForTimes(recallDir string, session *trace.Session, startedAt time.Time, endedAt time.Time) string {
+	return filepath.Join(recallDir, "sessions", sessionDirNameFor(session, startedAt, endedAt))
+}
+
+func SegmentDir(recallDir string, session *trace.Session) string {
+	return SegmentDirForTimes(recallDir, session, session.StartedAt, session.EndedAt)
+}
+
+func SegmentDirForTimes(recallDir string, session *trace.Session, startedAt time.Time, endedAt time.Time) string {
+	return filepath.Join(SessionDirForTimes(recallDir, session, startedAt, endedAt), segmentsDirName, segmentDirName(session.SegmentIndex))
 }
 
 func sectionFileName(index int) string {

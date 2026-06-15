@@ -41,6 +41,14 @@ func WithProviderOptionsIncremental(ctx context.Context, provider string, model 
 	return WithClientIncremental(ctx, client, model, reasoningLevel, limiter, session, existingSections, sectionIDs)
 }
 
+func WithProviderOptionsAggregateSession(ctx context.Context, provider string, model string, reasoningLevel string, options llm.Options, limiter *llm.Limiter, segments []SegmentSummary) (string, llm.Usage, error) {
+	client, err := llm.NewWithOptions(provider, options)
+	if err != nil {
+		return "", llm.Usage{}, err
+	}
+	return WithClientAggregateSession(ctx, client, model, reasoningLevel, limiter, segments)
+}
+
 // WithClient summarizes the session, retrying on validation failures. The
 // returned usage is the sum across every attempt, so it reflects total spend
 // even when a retry was needed.
@@ -85,6 +93,44 @@ func WithClientIncremental(ctx context.Context, client llm.Client, model string,
 		return nil, usage, err
 	}
 	return result, usage, nil
+}
+
+func WithClientAggregateSession(ctx context.Context, client llm.Client, model string, reasoningLevel string, limiter *llm.Limiter, segments []SegmentSummary) (string, llm.Usage, error) {
+	var usage llm.Usage
+	input := renderAggregateSessionInput(segments)
+	schema := buildAggregateSessionSchema()
+
+	var lastErr error
+	for attempt := 1; attempt <= maxSummaryAttempts; attempt++ {
+		prompt := input
+		if lastErr != nil {
+			prompt = retryPrompt(input, lastErr, "Return the complete JSON object again. Include session_summary. Do not omit the required summary.")
+		}
+
+		response, err := generateStructured(ctx, limiter, client, llm.StructuredRequest{
+			Model:          model,
+			ReasoningLevel: reasoningLevel,
+			SystemPrompt:   aggregateSessionPrompt(),
+			UserPrompt:     prompt,
+			SchemaName:     aggregateSessionSchemaName,
+			Schema:         schema,
+		})
+		if err != nil {
+			return "", usage, err
+		}
+		usage.Add(response.Usage)
+		if err := writeRawOutput(response.Text); err != nil {
+			return "", usage, err
+		}
+
+		result, err := decodeAndValidateAggregateSessionSummary(response.Text)
+		if err == nil {
+			return result.SessionSummary, usage, nil
+		}
+		lastErr = err
+	}
+
+	return "", usage, lastErr
 }
 
 func summarizeOneShot(ctx context.Context, client llm.Client, model string, reasoningLevel string, limiter *llm.Limiter, session *trace.Session, input string) (*Result, llm.Usage, error) {
@@ -335,6 +381,17 @@ func decodeAndValidateSessionSummary(session *trace.Session, raw string) (wireSe
 	return result, nil
 }
 
+func decodeAndValidateAggregateSessionSummary(raw string) (wireAggregateSessionResult, error) {
+	var result wireAggregateSessionResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return wireAggregateSessionResult{}, err
+	}
+	if strings.TrimSpace(result.SessionSummary) == "" {
+		return wireAggregateSessionResult{}, fmt.Errorf("summarize: session_summary is missing")
+	}
+	return result, nil
+}
+
 func retryPrompt(input string, err error, instruction string) string {
 	return input + "\n\n<retry_instructions>\nThe previous JSON response failed validation: " + err.Error() + "\n" + instruction + "\n</retry_instructions>\n"
 }
@@ -484,5 +541,21 @@ func renderSessionSummaryInput(session *trace.Session, sections map[string]Secti
 		builder.WriteString(">\n")
 	}
 	builder.WriteString("</session>\n")
+	return builder.String()
+}
+
+func renderAggregateSessionInput(segments []SegmentSummary) string {
+	var builder strings.Builder
+	builder.WriteString("<session_segments>\n")
+	for _, segment := range segments {
+		builder.WriteString("\n<segment_summary id=\"")
+		builder.WriteString(segment.ID)
+		builder.WriteString("\">\n")
+		builder.WriteString(strings.TrimSpace(segment.Summary))
+		builder.WriteString("\n</segment_summary:")
+		builder.WriteString(segment.ID)
+		builder.WriteString(">\n")
+	}
+	builder.WriteString("</session_segments>\n")
 	return builder.String()
 }

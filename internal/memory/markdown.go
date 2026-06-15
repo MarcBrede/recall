@@ -11,6 +11,14 @@ import (
 )
 
 func RenderSessionMarkdown(session *trace.Session, result *summarize.Result, sectionPathByID map[string]string) string {
+	return renderSessionLikeMarkdown("Session", session, result, sectionPathByID)
+}
+
+func RenderSegmentMarkdown(session *trace.Session, result *summarize.Result, sectionPathByID map[string]string) string {
+	return renderSessionLikeMarkdown("Segment "+segmentDirName(session.SegmentIndex), session, result, sectionPathByID)
+}
+
+func renderSessionLikeMarkdown(title string, session *trace.Session, result *summarize.Result, sectionPathByID map[string]string) string {
 	var builder strings.Builder
 
 	writeFrontMatterStart(&builder)
@@ -28,7 +36,7 @@ func RenderSessionMarkdown(session *trace.Session, result *summarize.Result, sec
 	writeYAMLBlock(&builder, "summary", result.SessionSummary)
 	writeFrontMatterEnd(&builder)
 
-	builder.WriteString("# Session\n\n")
+	fmt.Fprintf(&builder, "# %s\n\n", title)
 	if strings.TrimSpace(result.CompactionSummary) != "" {
 		builder.WriteString("## Compaction\n\n")
 		builder.WriteString(strings.TrimSpace(result.CompactionSummary))
@@ -44,6 +52,45 @@ func RenderSessionMarkdown(session *trace.Session, result *summarize.Result, sec
 			sectionDisplayID(i+1),
 			link,
 			oneLine(sectionResult.Summary),
+		)
+	}
+
+	return builder.String()
+}
+
+type AggregateSegment struct {
+	ID              string `json:"id"`
+	Path            string `json:"path"`
+	MetadataPath    string `json:"metadata_path,omitempty"`
+	SourceStartLine int    `json:"source_start_line,omitempty"`
+	SourceEndLine   int    `json:"source_end_line,omitempty"`
+	StartedAt       string `json:"started_at,omitempty"`
+	LastEventAt     string `json:"last_event_at,omitempty"`
+	Summary         string `json:"summary"`
+}
+
+func RenderAggregateSessionMarkdown(session *trace.Session, summary string, startedAt string, lastEventAt string, segments []AggregateSegment) string {
+	var builder strings.Builder
+
+	writeFrontMatterStart(&builder)
+	writeYAMLString(&builder, "id", session.ExternalID)
+	writeYAMLString(&builder, "source", string(session.Source))
+	writeYAMLString(&builder, "source_file", session.SourceFile)
+	writeYAMLString(&builder, "forked_from_session_id", forkedFromSessionID(session.Metadata))
+	writeYAMLString(&builder, "started_at", startedAt)
+	writeYAMLString(&builder, "last_event_at", lastEventAt)
+	writeYAMLBlock(&builder, "summary", summary)
+	writeFrontMatterEnd(&builder)
+
+	builder.WriteString("# Session\n\n")
+	builder.WriteString("## Segments\n\n")
+	for _, segment := range segments {
+		fmt.Fprintf(
+			&builder,
+			"- [%s](%s): %s\n",
+			segment.ID,
+			filepath.ToSlash(segment.Path),
+			oneLine(segment.Summary),
 		)
 	}
 

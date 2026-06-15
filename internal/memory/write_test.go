@@ -42,7 +42,7 @@ func TestWriteSessionWritesMemoryDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantDir := filepath.Join(recallDir, "sessions", "2026-01-02T030630Z-codex-session-001-seg002")
+	wantDir := filepath.Join(recallDir, "sessions", "2026-01-02T030405Z-codex-session-001")
 	if got.Dir != wantDir {
 		t.Fatalf("dir = %q, want %q", got.Dir, wantDir)
 	}
@@ -133,6 +133,138 @@ func TestWriteSessionWritesMemoryDirectory(t *testing.T) {
 	}
 }
 
+func TestWriteSessionWritesSegmentDirectory(t *testing.T) {
+	recallDir := filepath.Join(t.TempDir(), ".recall")
+	session := testSession()
+	result := testSummary()
+	rootStartedAt := time.Date(2026, 1, 1, 1, 2, 3, 0, time.UTC)
+	rootEndedAt := time.Date(2026, 1, 4, 5, 6, 7, 0, time.UTC)
+
+	got, err := WriteSession(WriteOptions{
+		RecallDir:     recallDir,
+		Config:        config.Default(),
+		Segmented:     true,
+		RootStartedAt: rootStartedAt,
+		RootEndedAt:   rootEndedAt,
+	}, session, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantRoot := filepath.Join(recallDir, "sessions", "2026-01-01T010203Z-codex-session-001")
+	wantDir := filepath.Join(wantRoot, "segments", "seg002")
+	if got.RootDir != wantRoot {
+		t.Fatalf("root dir = %q, want %q", got.RootDir, wantRoot)
+	}
+	if got.Dir != wantDir {
+		t.Fatalf("dir = %q, want %q", got.Dir, wantDir)
+	}
+	if got.SessionPath != "" {
+		t.Fatalf("session path = %q, want empty for segmented write", got.SessionPath)
+	}
+	if got.SegmentPath != filepath.Join(wantDir, "segment.md") {
+		t.Fatalf("segment path = %q", got.SegmentPath)
+	}
+	segmentMarkdown := readFile(t, filepath.Join(wantDir, "segment.md"))
+	for _, want := range []string{
+		"# Segment seg002",
+		"- [S001](sections/S001.md): Section summary.",
+	} {
+		if !strings.Contains(segmentMarkdown, want) {
+			t.Fatalf("segment markdown missing %q:\n%s", want, segmentMarkdown)
+		}
+	}
+}
+
+func TestWriteSessionPreservesUnchangedSections(t *testing.T) {
+	recallDir := filepath.Join(t.TempDir(), ".recall")
+	previousDir := filepath.Join(recallDir, "sessions", "previous")
+	writeTestMemoryFile(t, filepath.Join(previousDir, "sections", "S001.md"), "old section one")
+	writeTestMemoryFile(t, filepath.Join(previousDir, "sections", "S002.md"), "old section two")
+	writeTestMemoryFile(t, filepath.Join(previousDir, "sections", "S003.md"), "stale section three")
+
+	session := testSession()
+	session.Sections = append(session.Sections, trace.Section{
+		ID:        "S2",
+		StartLine: 16,
+		EndLine:   18,
+		StartedAt: session.StartedAt,
+		EndedAt:   session.EndedAt,
+		Steps: []trace.Step{
+			{ID: "S2.T1", StartLine: 16, EndLine: 18},
+		},
+	})
+	result := testSummary()
+	result.SectionSummaries["S2"] = summarize.SectionResult{
+		Summary: "Changed second section.",
+		StepSummaries: map[string]string{
+			"S2.T1": "Changed second step.",
+		},
+	}
+
+	got, err := WriteSession(WriteOptions{
+		RecallDir:       recallDir,
+		Config:          config.Default(),
+		PreviousDir:     previousDir,
+		ChangedSections: map[string]bool{"S2": true},
+	}, session, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotSection := readFile(t, filepath.Join(got.Dir, "sections", "S001.md")); gotSection != "old section one" {
+		t.Fatalf("unchanged section was rewritten:\n%s", gotSection)
+	}
+	if gotSection := readFile(t, filepath.Join(got.Dir, "sections", "S002.md")); !strings.Contains(gotSection, "Changed second section.") {
+		t.Fatalf("changed section was not rewritten:\n%s", gotSection)
+	}
+	if _, err := os.Stat(filepath.Join(got.Dir, "sections", "S003.md")); !os.IsNotExist(err) {
+		t.Fatalf("stale section still exists: %v", err)
+	}
+}
+
+func TestWriteSessionAggregateWritesRootSummary(t *testing.T) {
+	recallDir := filepath.Join(t.TempDir(), ".recall")
+	session := testSession()
+	rootStartedAt := time.Date(2026, 1, 1, 1, 2, 3, 0, time.UTC)
+	rootEndedAt := time.Date(2026, 1, 4, 5, 6, 7, 0, time.UTC)
+	rootDir := filepath.Join(recallDir, "sessions", "2026-01-01T010203Z-codex-session-001")
+	writeTestMemoryFile(t, filepath.Join(rootDir, "sections", "S001.md"), "stale root section")
+
+	got, err := WriteSessionAggregate(WriteAggregateOptions{
+		RecallDir:     recallDir,
+		Config:        config.Default(),
+		RootStartedAt: rootStartedAt,
+		RootEndedAt:   rootEndedAt,
+	}, session, "Whole session summary.", []AggregateSegment{
+		{
+			ID:      "seg000",
+			Path:    "segments/seg000/segment.md",
+			Summary: "First segment summary.",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RootDir != rootDir {
+		t.Fatalf("root dir = %q, want %q", got.RootDir, rootDir)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "sections")); !os.IsNotExist(err) {
+		t.Fatalf("root sections still exists: %v", err)
+	}
+
+	markdown := readFile(t, filepath.Join(rootDir, "session.md"))
+	for _, want := range []string{
+		"# Session",
+		"summary: |",
+		"- [seg000](segments/seg000/segment.md): First segment summary.",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("aggregate markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
 func TestWriteSessionRejectsMissingStepSummary(t *testing.T) {
 	result := testSummary()
 	delete(result.SectionSummaries["S1"].StepSummaries, "S1.T2")
@@ -216,4 +348,14 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func writeTestMemoryFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
 }

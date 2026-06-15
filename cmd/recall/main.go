@@ -10,9 +10,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/marc-brede/recall/internal/config"
@@ -257,6 +259,12 @@ func runIngest(args []string) error {
 		return writePlanSummary(os.Stdout, output)
 	}
 
+	releaseIngestLock, err := acquireIngestLock(loaded.Dir)
+	if err != nil {
+		return err
+	}
+	defer releaseIngestLock()
+
 	index, err := memory.LoadIndex(loaded.Dir)
 	if err != nil {
 		return err
@@ -279,11 +287,8 @@ func runIngest(args []string) error {
 	countIngestResults(&output)
 	logIngestCompleted(log, output)
 	progress.Printf("ingest: complete succeeded=%d skipped=%d failed=%d\n", output.Succeeded, output.Skipped, output.Failed)
-	indexChanged := upsertIngestResults(index, loaded.Dir, output.Results, time.Now().UTC())
-	if indexChanged {
-		if err := index.Save(loaded.Dir); err != nil {
-			return err
-		}
+	if err := saveSuccessfulIngestResults(loaded.Dir, output.Results, time.Now().UTC()); err != nil {
+		return err
 	}
 
 	if err := writeJSON(os.Stdout, output); err != nil {
@@ -394,6 +399,12 @@ func runIngestLast(last int, verbose bool, logJSON bool, dryRun bool) error {
 		return writePlanSummary(os.Stdout, output)
 	}
 
+	releaseIngestLock, err := acquireIngestLock(loaded.Dir)
+	if err != nil {
+		return err
+	}
+	defer releaseIngestLock()
+
 	progress := newProgressReporter(!verbose && !logJSON)
 	progress.Printf("ingest: discovering last %d session file(s)\n", last)
 
@@ -447,12 +458,8 @@ func runIngestLast(last int, verbose bool, logJSON bool, dryRun bool) error {
 	logIngestCompleted(log, output)
 	progress.Printf("ingest: complete succeeded=%d skipped=%d failed=%d\n", output.Succeeded, output.Skipped, output.Failed)
 
-	indexedAt := time.Now().UTC()
-	indexChanged := upsertIngestResults(index, loaded.Dir, output.Results, indexedAt)
-	if indexChanged {
-		if err := index.Save(loaded.Dir); err != nil {
-			return err
-		}
+	if err := saveSuccessfulIngestResults(loaded.Dir, output.Results, time.Now().UTC()); err != nil {
+		return err
 	}
 
 	if err := writeJSON(os.Stdout, output); err != nil {
@@ -485,14 +492,16 @@ func planPathSegments(ctx context.Context, loaded config.Loaded, index *memory.I
 		}}
 	}
 
+	segmented := len(flats) > 1
+	rootStartedAt, rootEndedAt := flatRootTimes(flats)
 	results := make([]ingestPlanResult, len(flats))
 	for i, flat := range flats {
-		results[i] = planFlatSegment(ctx, loaded, index, path, skipIndexed, flat)
+		results[i] = planFlatSegment(ctx, loaded, index, path, skipIndexed, flat, segmented, rootStartedAt, rootEndedAt)
 	}
 	return results
 }
 
-func planFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.Index, path string, skipIndexed bool, flat *trace.FlatSession) ingestPlanResult {
+func planFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.Index, path string, skipIndexed bool, flat *trace.FlatSession, segmented bool, rootStartedAt time.Time, rootEndedAt time.Time) ingestPlanResult {
 	result := ingestPlanResult{
 		Source:          flat.Source,
 		Path:            path,
@@ -509,13 +518,13 @@ func planFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.In
 		return result
 	}
 	result.SectionCount, result.StepCount, result.EventCount = sessionCounts(session)
-	result.TargetMemoryDir = memory.SessionDir(loaded.Dir, session)
+	result.TargetMemoryDir = expectedMemoryDir(loaded.Dir, session, segmented, rootStartedAt, rootEndedAt)
 	if session.EndedAt.IsZero() {
 		result.Status = "skipped"
 		result.Reason = "missing_last_event_at"
 		return result
 	}
-	if skipIndexed && index != nil && index.IsIndexed(session) {
+	if skipIndexed && isIndexedAtExpectedDir(index, loaded.Dir, session, result.TargetMemoryDir) {
 		result.Status = "skipped"
 		result.Reason = "already_indexed"
 		if entry, ok := index.Entry(session); ok {
@@ -629,21 +638,29 @@ func ingestPathSegments(ctx context.Context, loaded config.Loaded, index *memory
 	log.Info("ingest parsed", slog.Int("sub_sessions", len(flats)))
 	progress.Printf("ingest: parsed %s into %d segment(s)\n", path, len(flats))
 
+	segmented := len(flats) > 1
+	rootStartedAt, rootEndedAt := flatRootTimes(flats)
 	results := make([]ingestBatchResult, len(flats))
 	var wg sync.WaitGroup
 	for i, flat := range flats {
 		wg.Add(1)
 		go func(i int, flat *trace.FlatSession) {
 			defer wg.Done()
-			results[i] = ingestFlatSegment(ctx, loaded, index, path, skipIndexed, limiter, progress, log, flat)
+			results[i] = ingestFlatSegment(ctx, loaded, index, path, skipIndexed, limiter, progress, log, flat, segmented, rootStartedAt, rootEndedAt)
 		}(i, flat)
 	}
 	wg.Wait()
 
+	if segmented {
+		if aggregateFailure := writeAggregateSession(ctx, loaded, index, limiter, progress, log, results, rootStartedAt, rootEndedAt); aggregateFailure != nil {
+			results = append(results, *aggregateFailure)
+		}
+	}
+
 	return results
 }
 
-func ingestFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.Index, path string, skipIndexed bool, limiter *llm.Limiter, progress *progressReporter, log *slog.Logger, flat *trace.FlatSession) ingestBatchResult {
+func ingestFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.Index, path string, skipIndexed bool, limiter *llm.Limiter, progress *progressReporter, log *slog.Logger, flat *trace.FlatSession, segmented bool, rootStartedAt time.Time, rootEndedAt time.Time) ingestBatchResult {
 	result := ingestBatchResult{
 		Source:          flat.Source,
 		Path:            path,
@@ -673,7 +690,8 @@ func ingestFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.
 		progress.Printf("ingest: skip %s %s seg%03d (%s)\n", flat.Source, flat.ExternalID, flat.SegmentIndex, result.Reason)
 		return result
 	}
-	if skipIndexed && index != nil && index.IsIndexed(session) {
+	expectedDir := expectedMemoryDir(loaded.Dir, session, segmented, rootStartedAt, rootEndedAt)
+	if skipIndexed && isIndexedAtExpectedDir(index, loaded.Dir, session, expectedDir) {
 		result.Status = "skipped"
 		result.Reason = "already_indexed"
 		segLog.Info("segment skipped", slog.String("reason", result.Reason))
@@ -696,7 +714,7 @@ func ingestFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.
 		return result
 	}
 
-	summary, sectionMetadata, usage, err := summarizeSegment(segCtx, loaded.Config, limiter, session, previousMetadata)
+	summary, sectionMetadata, changedSections, usage, err := summarizeSegment(segCtx, loaded.Config, limiter, session, previousMetadata)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
@@ -710,6 +728,10 @@ func ingestFlatSegment(ctx context.Context, loaded config.Loaded, index *memory.
 		Config:          loaded.Config,
 		PreviousDir:     previousDir,
 		SectionMetadata: sectionMetadata,
+		Segmented:       segmented,
+		RootStartedAt:   rootStartedAt,
+		RootEndedAt:     rootEndedAt,
+		ChangedSections: changedSections,
 	}, session, summary)
 	if err != nil {
 		result.Status = "failed"
@@ -751,14 +773,169 @@ func loadPreviousMetadata(recallDir string, index *memory.Index, session *trace.
 	return dir, metadata, nil
 }
 
-func summarizeSegment(ctx context.Context, cfg config.Config, limiter *llm.Limiter, session *trace.Session, previous *memory.Metadata) (*summarize.Result, map[string]memory.SectionMetadata, llm.Usage, error) {
+func writeAggregateSession(ctx context.Context, loaded config.Loaded, index *memory.Index, limiter *llm.Limiter, progress *progressReporter, log *slog.Logger, results []ingestBatchResult, rootStartedAt time.Time, rootEndedAt time.Time) *ingestBatchResult {
+	var anySucceeded bool
+	var anyFailed bool
+	var sample *trace.Session
+	for i := range results {
+		result := &results[i]
+		if result.session != nil && sample == nil {
+			sample = result.session
+		}
+		switch result.Status {
+		case "succeeded":
+			anySucceeded = true
+		case "failed":
+			anyFailed = true
+		}
+	}
+	if !anySucceeded || anyFailed || sample == nil {
+		return nil
+	}
+
+	rootDir := memory.SessionDirForTimes(loaded.Dir, sample, rootStartedAt, rootEndedAt)
+	aggregateSegments := make([]memory.AggregateSegment, 0, len(results))
+	summarySegments := make([]summarize.SegmentSummary, 0, len(results))
+	for i := range results {
+		result := &results[i]
+		if result.session == nil {
+			return aggregateFailureResult(sample, fmt.Errorf("aggregate session: missing parsed session for segment result"))
+		}
+
+		dir := ""
+		switch result.Status {
+		case "succeeded":
+			if result.Write != nil {
+				dir = result.Write.Dir
+			}
+		case "skipped":
+			if entry, ok := index.Entry(result.session); ok {
+				dir = memory.ResolveMemoryDir(loaded.Dir, entry)
+			}
+		default:
+			return aggregateFailureResult(sample, fmt.Errorf("aggregate session: cannot use segment %d with status %s", result.SegmentIndex, result.Status))
+		}
+		if dir == "" {
+			return aggregateFailureResult(sample, fmt.Errorf("aggregate session: missing memory dir for segment %d", result.SegmentIndex))
+		}
+
+		metadata, err := memory.LoadMetadata(dir)
+		if err != nil {
+			return aggregateFailureResult(sample, err)
+		}
+		segmentID := fmt.Sprintf("seg%03d", result.SegmentIndex)
+		segmentPath, err := filepath.Rel(rootDir, filepath.Join(dir, "segment.md"))
+		if err != nil {
+			segmentPath = filepath.Join(dir, "segment.md")
+		}
+		metadataPath, err := filepath.Rel(rootDir, filepath.Join(dir, "metadata.json"))
+		if err != nil {
+			metadataPath = filepath.Join(dir, "metadata.json")
+		}
+		aggregateSegments = append(aggregateSegments, memory.AggregateSegment{
+			ID:              segmentID,
+			Path:            filepath.ToSlash(segmentPath),
+			MetadataPath:    filepath.ToSlash(metadataPath),
+			SourceStartLine: metadata.SourceStartLine,
+			SourceEndLine:   metadata.SourceEndLine,
+			StartedAt:       metadata.StartedAt,
+			LastEventAt:     metadata.LastEventAt,
+			Summary:         metadata.Summaries.SessionSummary,
+		})
+		summarySegments = append(summarySegments, summarize.SegmentSummary{
+			ID:      segmentID,
+			Summary: metadata.Summaries.SessionSummary,
+		})
+	}
+
+	aggregateCtx := obs.Into(ctx, log.With(
+		slog.String("external_id", sample.ExternalID),
+		slog.String("source", string(sample.Source)),
+		slog.Int("segments", len(summarySegments)),
+	))
+	progress.Printf("ingest: summarize aggregate session %s %s segments=%d\n", sample.Source, sample.ExternalID, len(summarySegments))
+	sessionSummary, usage, err := summarize.WithProviderOptionsAggregateSession(
+		aggregateCtx,
+		loaded.Config.LLM.Provider,
+		loaded.Config.LLM.Model,
+		loaded.Config.LLM.Reasoning.Level,
+		llmOptions(loaded.Config.LLM),
+		limiter,
+		summarySegments,
+	)
+	if err != nil {
+		progress.Printf("ingest: fail aggregate session %s %s summarize: %s\n", sample.Source, sample.ExternalID, err.Error())
+		return aggregateFailureResult(sample, err)
+	}
+	if _, err := memory.WriteSessionAggregate(memory.WriteAggregateOptions{
+		RecallDir:     loaded.Dir,
+		Config:        loaded.Config,
+		RootStartedAt: rootStartedAt,
+		RootEndedAt:   rootEndedAt,
+	}, sample, sessionSummary, aggregateSegments); err != nil {
+		progress.Printf("ingest: fail aggregate session %s %s write: %s\n", sample.Source, sample.ExternalID, err.Error())
+		return aggregateFailureResult(sample, err)
+	}
+	progress.Printf("ingest: done aggregate session %s %s input_tokens=%d output_tokens=%d\n", sample.Source, sample.ExternalID, usage.InputTokens, usage.OutputTokens)
+	return nil
+}
+
+func aggregateFailureResult(session *trace.Session, err error) *ingestBatchResult {
+	return &ingestBatchResult{
+		Source:       session.Source,
+		Path:         session.SourceFile,
+		ExternalID:   session.ExternalID,
+		SegmentIndex: -1,
+		Status:       "failed",
+		Reason:       "aggregate_session",
+		Error:        err.Error(),
+		session:      session,
+	}
+}
+
+func flatRootTimes(flats []*trace.FlatSession) (time.Time, time.Time) {
+	var startedAt time.Time
+	var endedAt time.Time
+	for _, flat := range flats {
+		if flat == nil {
+			continue
+		}
+		if !flat.StartedAt.IsZero() && (startedAt.IsZero() || flat.StartedAt.Before(startedAt)) {
+			startedAt = flat.StartedAt
+		}
+		if !flat.EndedAt.IsZero() && (endedAt.IsZero() || flat.EndedAt.After(endedAt)) {
+			endedAt = flat.EndedAt
+		}
+	}
+	return startedAt, endedAt
+}
+
+func expectedMemoryDir(recallDir string, session *trace.Session, segmented bool, rootStartedAt time.Time, rootEndedAt time.Time) string {
+	if segmented {
+		return memory.SegmentDirForTimes(recallDir, session, rootStartedAt, rootEndedAt)
+	}
+	return memory.SessionDirForTimes(recallDir, session, rootStartedAt, rootEndedAt)
+}
+
+func isIndexedAtExpectedDir(index *memory.Index, recallDir string, session *trace.Session, expectedDir string) bool {
+	if index == nil || !index.IsIndexed(session) {
+		return false
+	}
+	entry, ok := index.Entry(session)
+	if !ok {
+		return false
+	}
+	return filepath.Clean(memory.ResolveMemoryDir(recallDir, entry)) == filepath.Clean(expectedDir)
+}
+
+func summarizeSegment(ctx context.Context, cfg config.Config, limiter *llm.Limiter, session *trace.Session, previous *memory.Metadata) (*summarize.Result, map[string]memory.SectionMetadata, map[string]bool, llm.Usage, error) {
 	sectionMetadata, err := buildSectionMetadata(session)
 	if err != nil {
-		return nil, nil, llm.Usage{}, err
+		return nil, nil, nil, llm.Usage{}, err
 	}
 	if previous == nil || len(previous.Summaries.SectionSummaries) == 0 {
 		result, usage, err := summarizeSession(ctx, cfg, limiter, session)
-		return result, sectionMetadata, usage, err
+		return result, sectionMetadata, allSectionIDs(session), usage, err
 	}
 
 	reused := make(map[string]summarize.SectionResult, len(session.Sections))
@@ -775,7 +952,7 @@ func summarizeSegment(ctx context.Context, cfg config.Config, limiter *llm.Limit
 			previousSection.Status == memory.SectionStatusFinal &&
 			previousSection.InputHash != "" &&
 			previousSection.InputHash != current.InputHash {
-			return nil, sectionMetadata, llm.Usage{}, fmt.Errorf("incremental ingest: final section %s changed; remove its index entry or reingest from scratch", section.ID)
+			return nil, sectionMetadata, nil, llm.Usage{}, fmt.Errorf("incremental ingest: final section %s changed; remove its index entry or reingest from scratch", section.ID)
 		}
 		changedSectionIDs = append(changedSectionIDs, section.ID)
 	}
@@ -783,7 +960,7 @@ func summarizeSegment(ctx context.Context, cfg config.Config, limiter *llm.Limit
 	if len(changedSectionIDs) == 0 {
 		result := previous.Summaries
 		if err := summarize.ValidateResult(session, &result); err == nil {
-			return &result, sectionMetadata, llm.Usage{}, nil
+			return &result, sectionMetadata, map[string]bool{}, llm.Usage{}, nil
 		}
 	}
 
@@ -798,7 +975,23 @@ func summarizeSegment(ctx context.Context, cfg config.Config, limiter *llm.Limit
 		reused,
 		changedSectionIDs,
 	)
-	return result, sectionMetadata, usage, err
+	return result, sectionMetadata, sectionIDSet(changedSectionIDs), usage, err
+}
+
+func allSectionIDs(session *trace.Session) map[string]bool {
+	ids := make(map[string]bool, len(session.Sections))
+	for _, section := range session.Sections {
+		ids[section.ID] = true
+	}
+	return ids
+}
+
+func sectionIDSet(ids []string) map[string]bool {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
 }
 
 func buildSectionMetadata(session *trace.Session) (map[string]memory.SectionMetadata, error) {
@@ -1041,6 +1234,44 @@ func upsertIngestResults(index *memory.Index, recallDir string, results []ingest
 		}
 	}
 	return indexChanged
+}
+
+func saveSuccessfulIngestResults(recallDir string, results []ingestBatchResult, indexedAt time.Time) error {
+	index, err := memory.LoadIndex(recallDir)
+	if err != nil {
+		return err
+	}
+	if !upsertIngestResults(index, recallDir, results, indexedAt) {
+		return nil
+	}
+	return index.Save(recallDir)
+}
+
+func acquireIngestLock(recallDir string) (func(), error) {
+	if strings.TrimSpace(recallDir) == "" {
+		return nil, errors.New("ingest: recall dir is required")
+	}
+	if err := os.MkdirAll(recallDir, 0755); err != nil {
+		return nil, err
+	}
+
+	path := filepath.Join(recallDir, ".ingest.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("ingest: another ingest is already running (%s)", path)
+		}
+		return nil, err
+	}
+
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }
 
 func runDiscover(args []string) error {
