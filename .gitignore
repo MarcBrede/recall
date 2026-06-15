@@ -1,3 +1,7 @@
 # Editor / IDE settings (machine-specific)
 .vscode/
 .idea/
+
+# Local recall state and generated binary
+.recall/
+/recall

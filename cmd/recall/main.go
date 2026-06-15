@@ -19,11 +19,13 @@ import (
 
 	"github.com/marc-brede/recall/internal/config"
 	"github.com/marc-brede/recall/internal/discover"
+	"github.com/marc-brede/recall/internal/embed"
 	"github.com/marc-brede/recall/internal/llm"
 	"github.com/marc-brede/recall/internal/memory"
 	"github.com/marc-brede/recall/internal/obs"
 	"github.com/marc-brede/recall/internal/prepare"
 	"github.com/marc-brede/recall/internal/provider"
+	"github.com/marc-brede/recall/internal/search"
 	"github.com/marc-brede/recall/internal/summarize"
 	"github.com/marc-brede/recall/internal/trace"
 )
@@ -57,6 +59,10 @@ func run(args []string) error {
 		return runIngest(args[1:])
 	case "discover":
 		return runDiscover(args[1:])
+	case "reindex":
+		return runReindex(args[1:])
+	case "search":
+		return runSearch(args[1:])
 	default:
 		return usageError()
 	}
@@ -290,6 +296,9 @@ func runIngest(args []string) error {
 	if err := saveSuccessfulIngestResults(loaded.Dir, output.Results, time.Now().UTC()); err != nil {
 		return err
 	}
+	if err := updateSearchIndexForIngest(ctx, loaded, output.Results, progress); err != nil {
+		return err
+	}
 
 	if err := writeJSON(os.Stdout, output); err != nil {
 		return err
@@ -459,6 +468,9 @@ func runIngestLast(last int, verbose bool, logJSON bool, dryRun bool) error {
 	progress.Printf("ingest: complete succeeded=%d skipped=%d failed=%d\n", output.Succeeded, output.Skipped, output.Failed)
 
 	if err := saveSuccessfulIngestResults(loaded.Dir, output.Results, time.Now().UTC()); err != nil {
+		return err
+	}
+	if err := updateSearchIndexForIngest(ctx, loaded, output.Results, progress); err != nil {
 		return err
 	}
 
@@ -1295,6 +1307,71 @@ func runDiscover(args []string) error {
 	return writeJSON(os.Stdout, sessions)
 }
 
+func runReindex(args []string) error {
+	flags := flag.NewFlagSet("reindex", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return usageError()
+	}
+
+	loaded, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	opts, err := searchOptions(loaded)
+	if err != nil {
+		return err
+	}
+	result, err := search.Reindex(context.Background(), opts)
+	if err != nil {
+		return err
+	}
+	return writeJSON(os.Stdout, result)
+}
+
+func runSearch(args []string) error {
+	flags := flag.NewFlagSet("search", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	limit := flags.Int("limit", 10, "maximum number of results")
+	jsonOutput := flags.Bool("json", false, "emit results as JSON")
+	nodeType := flags.String("type", "", "restrict results to comma-separated node types: session, segment, section")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	query := strings.TrimSpace(strings.Join(flags.Args(), " "))
+	if query == "" {
+		return usageError()
+	}
+
+	loaded, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	opts, err := searchOptions(loaded)
+	if err != nil {
+		return err
+	}
+	results, err := search.Search(context.Background(), opts, query, search.SearchOptions{
+		Limit:     *limit,
+		NodeTypes: *nodeType,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(os.Stdout, results)
+	}
+	for _, result := range results {
+		if _, err := fmt.Fprintf(os.Stdout, "%.4f\t%s\t%s\n%s\n\n", result.Score, result.NodeType, result.MemoryPath, result.Snippet); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func loadConfig() (config.Loaded, error) {
 	loaded, err := config.Load(".")
 	if err != nil {
@@ -1304,6 +1381,9 @@ func loadConfig() (config.Loaded, error) {
 		return config.Loaded{}, err
 	}
 	if err := loaded.Config.ValidateIngest(loaded.Path); err != nil {
+		return config.Loaded{}, err
+	}
+	if err := loaded.Config.ValidateSearch(loaded.Path); err != nil {
 		return config.Loaded{}, err
 	}
 	return loaded, nil
@@ -1331,6 +1411,57 @@ func llmOptions(cfg config.LLMConfig) llm.Options {
 			Command: cfg.Auth.Command,
 		},
 	}
+}
+
+func searchOptions(loaded config.Loaded) (search.Options, error) {
+	client, err := embed.NewWithOptions(loaded.Config.Search.Provider, embed.Options{
+		BaseURL: loaded.Config.Search.BaseURL,
+		Headers: loaded.Config.Search.Headers,
+		Auth: embed.AuthConfig{
+			Type:    loaded.Config.Search.Auth.Type,
+			Env:     loaded.Config.Search.Auth.Env,
+			Command: loaded.Config.Search.Auth.Command,
+		},
+	})
+	if err != nil {
+		return search.Options{}, err
+	}
+	return search.Options{
+		RecallDir:   loaded.Dir,
+		Model:       loaded.Config.Search.Model,
+		Client:      client,
+		Concurrency: loaded.Config.Ingest.Concurrency,
+	}, nil
+}
+
+func updateSearchIndexForIngest(ctx context.Context, loaded config.Loaded, results []ingestBatchResult, progress *progressReporter) error {
+	if !loaded.Config.Search.Enabled {
+		return nil
+	}
+	opts, err := searchOptions(loaded)
+	if err != nil {
+		return err
+	}
+	rootDirs := make(map[string]struct{})
+	for _, result := range results {
+		if result.Status != "succeeded" || result.Write == nil {
+			continue
+		}
+		dir := result.Write.RootDir
+		if strings.TrimSpace(dir) == "" {
+			dir = result.Write.Dir
+		}
+		if strings.TrimSpace(dir) != "" {
+			rootDirs[filepath.Clean(dir)] = struct{}{}
+		}
+	}
+	for dir := range rootDirs {
+		progress.Printf("search: indexing %s\n", dir)
+		if _, err := search.IndexMemoryDir(ctx, opts, dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sessionCounts returns the structural size of a prepared session: how many
@@ -1458,5 +1589,5 @@ func sessionBatch(sessions []*trace.Session) trace.SessionBatch {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage:\n  recall parse <session.jsonl>\n  recall prepare [parsed-session.json|-]\n  recall render [prepared-session.json|-]\n  recall summarize [prepared-session.json|-]\n  recall write-memory <prepared-session.json> <summary.json>\n  recall ingest <session.jsonl>\n  recall ingest --last N\n  recall discover [--last N]")
+	return fmt.Errorf("usage:\n  recall parse <session.jsonl>\n  recall prepare [parsed-session.json|-]\n  recall render [prepared-session.json|-]\n  recall summarize [prepared-session.json|-]\n  recall write-memory <prepared-session.json> <summary.json>\n  recall ingest <session.jsonl>\n  recall ingest --last N\n  recall discover [--last N]\n  recall reindex\n  recall search [--limit N] [--json] [--type session|segment|section[,..]] <query>")
 }

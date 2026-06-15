@@ -34,7 +34,7 @@ func TestEndpointFromBaseAcceptsFullEndpoint(t *testing.T) {
 
 func TestRequestHeadersUsesAuthHeaderOverrideAndExtraHeaders(t *testing.T) {
 	t.Setenv(envAuthHeader, "Authorization: Bearer token")
-	t.Setenv(envHeaders, `{"source":"recall-test","org-id":"2"}`)
+	t.Setenv(envHeaders, `{"source":"recall-test","tenant-id":"2"}`)
 
 	headers, err := requestHeaders("TEST_API_KEY", "x-api-key", func(apiKey string) string {
 		return apiKey
@@ -48,7 +48,7 @@ func TestRequestHeadersUsesAuthHeaderOverrideAndExtraHeaders(t *testing.T) {
 	wants := map[string]string{
 		"Authorization":     "Bearer token",
 		"source":            "recall-test",
-		"org-id":            "2",
+		"tenant-id":         "2",
 		"anthropic-version": anthropicVersion,
 	}
 	for key, want := range wants {

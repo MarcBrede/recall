@@ -16,6 +16,9 @@ const (
 	DefaultModel          = "claude-opus-4-8"
 	DefaultReasoningLevel = "high"
 	DefaultConcurrency    = 10
+	DefaultSearchProvider = "openai"
+	DefaultSearchModel    = "text-embedding-3-small"
+	DefaultSearchEnabled  = false
 	DefaultAuthType       = "provider_env"
 
 	AuthProviderEnv   = "provider_env"
@@ -33,6 +36,7 @@ type Config struct {
 	ConfigVersion int          `json:"config_version"`
 	LLM           LLMConfig    `json:"llm"`
 	Ingest        IngestConfig `json:"ingest"`
+	Search        SearchConfig `json:"search"`
 }
 
 type LLMConfig struct {
@@ -56,6 +60,15 @@ type LLMAuthConfig struct {
 
 type IngestConfig struct {
 	Concurrency int `json:"concurrency"`
+}
+
+type SearchConfig struct {
+	Enabled  bool              `json:"enabled"`
+	Provider string            `json:"provider"`
+	Model    string            `json:"model"`
+	BaseURL  string            `json:"base_url,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Auth     LLMAuthConfig     `json:"auth,omitempty"`
 }
 
 func Load(_ string) (Loaded, error) {
@@ -100,6 +113,14 @@ func Default() Config {
 		Ingest: IngestConfig{
 			Concurrency: DefaultConcurrency,
 		},
+		Search: SearchConfig{
+			Enabled:  DefaultSearchEnabled,
+			Provider: DefaultSearchProvider,
+			Model:    DefaultSearchModel,
+			Auth: LLMAuthConfig{
+				Type: DefaultAuthType,
+			},
+		},
 	}
 }
 
@@ -138,6 +159,41 @@ func (config Config) ValidateLLM(path string) error {
 func (config Config) ValidateIngest(path string) error {
 	if config.Ingest.Concurrency <= 0 {
 		return fmt.Errorf("config: ingest.concurrency must be > 0 in %s", path)
+	}
+	return nil
+}
+
+func (config Config) ValidateSearch(path string) error {
+	if !config.Search.Enabled {
+		return nil
+	}
+	var missing []string
+	if strings.TrimSpace(config.Search.Provider) == "" {
+		missing = append(missing, "search.provider")
+	}
+	if strings.TrimSpace(config.Search.Model) == "" {
+		missing = append(missing, "search.model")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("config: set %s in %s", strings.Join(missing, " and "), path)
+	}
+	for key, value := range config.Search.Headers {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("config: search.headers must contain non-empty header names and values in %s", path)
+		}
+	}
+	switch strings.TrimSpace(config.Search.Auth.Type) {
+	case "", AuthProviderEnv:
+	case AuthHeaderEnv:
+		if strings.TrimSpace(config.Search.Auth.Env) == "" {
+			return fmt.Errorf("config: search.auth.env is required when search.auth.type is %q in %s", AuthHeaderEnv, path)
+		}
+	case AuthHeaderCommand:
+		if len(config.Search.Auth.Command) == 0 || strings.TrimSpace(config.Search.Auth.Command[0]) == "" {
+			return fmt.Errorf("config: search.auth.command is required when search.auth.type is %q in %s", AuthHeaderCommand, path)
+		}
+	default:
+		return fmt.Errorf("config: unsupported search.auth.type %q in %s", config.Search.Auth.Type, path)
 	}
 	return nil
 }
@@ -194,6 +250,22 @@ func readFile(path string) (Config, error) {
 	config.LLM.Auth.Env = strings.TrimSpace(config.LLM.Auth.Env)
 	config.LLM.Auth.Command = compactStrings(config.LLM.Auth.Command)
 	config.LLM.Headers = compactHeaders(config.LLM.Headers)
+	config.Search.Provider = strings.TrimSpace(config.Search.Provider)
+	if config.Search.Provider == "" {
+		config.Search.Provider = DefaultSearchProvider
+	}
+	config.Search.Model = strings.TrimSpace(config.Search.Model)
+	if config.Search.Model == "" {
+		config.Search.Model = DefaultSearchModel
+	}
+	config.Search.BaseURL = strings.TrimSpace(config.Search.BaseURL)
+	config.Search.Headers = compactHeaders(config.Search.Headers)
+	config.Search.Auth.Type = strings.TrimSpace(config.Search.Auth.Type)
+	if config.Search.Auth.Type == "" {
+		config.Search.Auth.Type = DefaultAuthType
+	}
+	config.Search.Auth.Env = strings.TrimSpace(config.Search.Auth.Env)
+	config.Search.Auth.Command = compactStrings(config.Search.Auth.Command)
 	return config, nil
 }
 

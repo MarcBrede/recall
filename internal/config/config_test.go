@@ -40,6 +40,15 @@ func TestLoadCreatesRecallDirAndDefaultConfig(t *testing.T) {
 	if loaded.Config.Ingest.Concurrency != DefaultConcurrency {
 		t.Fatalf("ingest concurrency = %d, want %d", loaded.Config.Ingest.Concurrency, DefaultConcurrency)
 	}
+	if loaded.Config.Search.Enabled != DefaultSearchEnabled {
+		t.Fatalf("search enabled = %v, want %v", loaded.Config.Search.Enabled, DefaultSearchEnabled)
+	}
+	if loaded.Config.Search.Provider != DefaultSearchProvider {
+		t.Fatalf("search provider = %q, want %q", loaded.Config.Search.Provider, DefaultSearchProvider)
+	}
+	if loaded.Config.Search.Model != DefaultSearchModel {
+		t.Fatalf("search model = %q, want %q", loaded.Config.Search.Model, DefaultSearchModel)
+	}
 }
 
 func TestLoadUsesHomeRecallDir(t *testing.T) {
@@ -162,6 +171,17 @@ func TestValidateIngestRequiresPositiveConcurrency(t *testing.T) {
 	config.Ingest.Concurrency = 0
 
 	err := config.ValidateIngest("/tmp/config.json")
+	if err == nil {
+		t.Fatal("err is nil")
+	}
+}
+
+func TestValidateSearchRequiresModelWhenEnabled(t *testing.T) {
+	config := Default()
+	config.Search.Enabled = true
+	config.Search.Model = ""
+
+	err := config.ValidateSearch("/tmp/config.json")
 	if err == nil {
 		t.Fatal("err is nil")
 	}
