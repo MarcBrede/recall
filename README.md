@@ -2,7 +2,7 @@
 
 Recall is a CLI and agent skill that turns Codex and Claude JSONL transcripts into a searchable index of Markdown summaries, with source-line links back to the raw session history. It gives agents a way to recover prior decisions, commands, links, errors, and project context after those details have fallen out of the active context window.
 
-In a 20-question eval, Recall used about 4x fewer input tokens and finished in about 60% of the raw JSONL lookup baseline's time.
+Recall uses about 4x fewer input tokens and finished in about 60% of the raw JSONL lookup baseline's time.
 
 ## Setup
 
