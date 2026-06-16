@@ -86,17 +86,7 @@ Choose the cheapest path that can answer the question. The goal is relevant evid
 - **Switch to raw JSONL when it is cheaper**: after finding a relevant session, decide whether Markdown navigation or scoped raw lookup is faster. For small sessions or exact strings, first find matching line numbers only, then inspect a tiny range with the truncating reader.
 
   ```bash
-  python3 -c 'import sys
-p,q=sys.argv[1],sys.argv[2]
-for n,line in enumerate(open(p),1):
-    if q in line: print(n)' <source_file> "<exact term>" | head
+  python3 -c 'import sys,itertools; p,q=sys.argv[1:3]; hits=(str(n) for n,line in enumerate(open(p),1) if q in line); print("\n".join(itertools.islice(hits,20)))' <source_file> "<exact term>"
 
-  python3 -c 'import json,sys; p,a,b=sys.argv[1],int(sys.argv[2]),int(sys.argv[3]); M=1000
-with open(p) as f:
-  for n,line in enumerate(f,1):
-    if a<=n<=b:
-      try:
-        o=json.loads(line); print(f"{n}\t"+json.dumps(o,ensure_ascii=False)[:M])
-      except Exception: print(f"{n}\t"+line[:M].rstrip())
-    if n>b: break' <source_file> <start_line> <end_line>
+  python3 -c 'import sys,itertools; p,a,b=sys.argv[1],int(sys.argv[2]),int(sys.argv[3]); print("".join(f"{n}\t{line[:1000].rstrip()}\n" for n,line in enumerate(itertools.islice(open(p),a-1,b),a)), end="")' <source_file> <start_line> <end_line>
   ```
