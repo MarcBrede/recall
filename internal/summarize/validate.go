@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func ValidateResult(session *trace.Session, result *Result) error {

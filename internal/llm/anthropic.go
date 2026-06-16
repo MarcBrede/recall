@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/marc-brede/recall/internal/obs"
+	"github.com/MarcBrede/recall/internal/obs"
 )
 
 const (

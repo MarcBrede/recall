@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 // DetectSource infers the source provider from the session file path.

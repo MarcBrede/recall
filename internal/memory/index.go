@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 const indexFileName = ".index.json"

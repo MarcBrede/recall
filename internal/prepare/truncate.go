@@ -3,7 +3,7 @@ package prepare
 import (
 	"fmt"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 const maxToolIOChars = 1000

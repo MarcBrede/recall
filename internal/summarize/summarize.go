@@ -8,9 +8,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/marc-brede/recall/internal/llm"
-	"github.com/marc-brede/recall/internal/prepare"
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/llm"
+	"github.com/MarcBrede/recall/internal/prepare"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 const maxSummaryAttempts = 2

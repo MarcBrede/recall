@@ -17,17 +17,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/marc-brede/recall/internal/config"
-	"github.com/marc-brede/recall/internal/discover"
-	"github.com/marc-brede/recall/internal/embed"
-	"github.com/marc-brede/recall/internal/llm"
-	"github.com/marc-brede/recall/internal/memory"
-	"github.com/marc-brede/recall/internal/obs"
-	"github.com/marc-brede/recall/internal/prepare"
-	"github.com/marc-brede/recall/internal/provider"
-	"github.com/marc-brede/recall/internal/search"
-	"github.com/marc-brede/recall/internal/summarize"
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/config"
+	"github.com/MarcBrede/recall/internal/discover"
+	"github.com/MarcBrede/recall/internal/embed"
+	"github.com/MarcBrede/recall/internal/llm"
+	"github.com/MarcBrede/recall/internal/memory"
+	"github.com/MarcBrede/recall/internal/obs"
+	"github.com/MarcBrede/recall/internal/prepare"
+	"github.com/MarcBrede/recall/internal/provider"
+	"github.com/MarcBrede/recall/internal/search"
+	"github.com/MarcBrede/recall/internal/summarize"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func main() {
@@ -1338,6 +1338,9 @@ func runSearch(args []string) error {
 	limit := flags.Int("limit", 10, "maximum number of results")
 	jsonOutput := flags.Bool("json", false, "emit results as JSON")
 	nodeType := flags.String("type", "", "restrict results to comma-separated node types: session, segment, section")
+	var sessionIDs stringListFlag
+	flags.Var(&sessionIDs, "session", "restrict results to a session id; repeatable and comma-separated")
+	flags.Var(&sessionIDs, "sessions", "restrict results to comma-separated session ids")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1355,8 +1358,9 @@ func runSearch(args []string) error {
 		return err
 	}
 	results, err := search.Search(context.Background(), opts, query, search.SearchOptions{
-		Limit:     *limit,
-		NodeTypes: *nodeType,
+		Limit:      *limit,
+		NodeTypes:  *nodeType,
+		SessionIDs: sessionIDs,
 	})
 	if err != nil {
 		return err
@@ -1368,6 +1372,31 @@ func runSearch(args []string) error {
 		if _, err := fmt.Fprintf(os.Stdout, "%.4f\t%s\t%s\n%s\n\n", result.Score, result.NodeType, result.MemoryPath, result.Snippet); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+type stringListFlag []string
+
+func (flag *stringListFlag) String() string {
+	if flag == nil {
+		return ""
+	}
+	return strings.Join(*flag, ",")
+}
+
+func (flag *stringListFlag) Set(value string) error {
+	added := false
+	for _, raw := range strings.Split(value, ",") {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			continue
+		}
+		*flag = append(*flag, item)
+		added = true
+	}
+	if !added {
+		return errors.New("session id is required")
 	}
 	return nil
 }
@@ -1589,5 +1618,5 @@ func sessionBatch(sessions []*trace.Session) trace.SessionBatch {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage:\n  recall parse <session.jsonl>\n  recall prepare [parsed-session.json|-]\n  recall render [prepared-session.json|-]\n  recall summarize [prepared-session.json|-]\n  recall write-memory <prepared-session.json> <summary.json>\n  recall ingest <session.jsonl>\n  recall ingest --last N\n  recall discover [--last N]\n  recall reindex\n  recall search [--limit N] [--json] [--type session|segment|section[,..]] <query>")
+	return fmt.Errorf("usage:\n  recall parse <session.jsonl>\n  recall prepare [parsed-session.json|-]\n  recall render [prepared-session.json|-]\n  recall summarize [prepared-session.json|-]\n  recall write-memory <prepared-session.json> <summary.json>\n  recall ingest <session.jsonl>\n  recall ingest --last N\n  recall discover [--last N]\n  recall reindex\n  recall search [--limit N] [--json] [--type session|segment|section[,..]] [--session ID] [--sessions ID[,ID...]] <query>")
 }

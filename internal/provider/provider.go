@@ -3,7 +3,7 @@ package provider
 import (
 	"context"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 // Parser translates one source JSONL file into one or more flat normalized

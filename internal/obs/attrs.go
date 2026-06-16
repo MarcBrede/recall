@@ -3,7 +3,7 @@ package obs
 import (
 	"log/slog"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 // trace groups the identifying fields shared by flat and prepared sessions into

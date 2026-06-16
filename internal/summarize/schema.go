@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 const schemaName = "recall_memory_summaries"

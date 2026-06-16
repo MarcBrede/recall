@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marc-brede/recall/internal/obs"
+	"github.com/MarcBrede/recall/internal/obs"
 )
 
 const maxErrorBodyChars = 4096

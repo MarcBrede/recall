@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marc-brede/recall/internal/embed"
+	"github.com/MarcBrede/recall/internal/embed"
 )
 
 type fakeEmbedClient struct{}
@@ -113,6 +113,9 @@ summary: |
 	if !strings.HasSuffix(results[0].MemoryPath, "sections/S002.md") {
 		t.Fatalf("top result path = %q, want S002 section", results[0].MemoryPath)
 	}
+	if got, want := results[0].SessionID, "test-session"; got != want {
+		t.Fatalf("top result session id = %q, want %q", got, want)
+	}
 
 	results, err = Search(context.Background(), Options{
 		RecallDir: recallDir,
@@ -175,6 +178,120 @@ summary: |
 	}, "alpha question", SearchOptions{NodeTypes: "file"})
 	if err == nil {
 		t.Fatal("Search() invalid node type error = nil, want error")
+	}
+}
+
+func TestSearchFiltersBySessionID(t *testing.T) {
+	recallDir := t.TempDir()
+	writeTestFile(t, filepath.Join(recallDir, "sessions", "2026-01-02T030405Z-codex-session-a", "sections", "S001.md"), `---
+id: "S1"
+session_id: "session-a"
+last_event_at: "2026-01-02T03:04:06Z"
+summary: |
+  Alpha implementation details for session A.
+---
+
+# S001
+`)
+	writeTestFile(t, filepath.Join(recallDir, "sessions", "2026-01-02T040506Z-codex-session-b", "sections", "S001.md"), `---
+id: "S1"
+session_id: "session-b"
+last_event_at: "2026-01-02T04:05:06Z"
+summary: |
+  Alpha implementation details for session B.
+---
+
+# S001
+`)
+
+	opts := Options{
+		RecallDir: recallDir,
+		Model:     "fake-embedding-model",
+		Client:    fakeEmbedClient{},
+	}
+	if _, err := Reindex(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Search(context.Background(), opts, "alpha question", SearchOptions{
+		Limit:      10,
+		NodeTypes:  NodeTypeSection,
+		SessionIDs: []string{"session-b"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if got, want := results[0].SessionID, "session-b"; got != want {
+		t.Fatalf("result session id = %q, want %q", got, want)
+	}
+	if !strings.Contains(results[0].MemoryPath, "session-b") {
+		t.Fatalf("result path = %q, want session-b path", results[0].MemoryPath)
+	}
+
+	results, err = Search(context.Background(), opts, "alpha question", SearchOptions{
+		Limit:      10,
+		NodeTypes:  NodeTypeSection,
+		SessionIDs: []string{"session-a,session-b", "session-a"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("comma-separated results len = %d, want 2", len(results))
+	}
+}
+
+func TestEnsureSchemaAddsSessionIDColumn(t *testing.T) {
+	recallDir := t.TempDir()
+	db, err := openDB(recallDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`create table nodes (
+		id integer primary key,
+		node_type text not null,
+		memory_path text not null unique,
+		content text not null,
+		content_hash text not null,
+		last_event_at text not null
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.Query(`pragma table_info(nodes)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "session_id" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("session_id column was not added")
 	}
 }
 

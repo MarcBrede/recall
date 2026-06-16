@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 const (

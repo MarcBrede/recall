@@ -18,6 +18,7 @@ const (
 
 type nodeInput struct {
 	NodeType    string
+	SessionID   string
 	MemoryPath  string
 	Content     string
 	ContentHash string
@@ -73,6 +74,7 @@ func scanMemoryNodes(recallDir string, scopeDir string) ([]nodeInput, error) {
 		sum := sha256.Sum256([]byte(content))
 		nodes = append(nodes, nodeInput{
 			NodeType:    nodeType,
+			SessionID:   sessionIDForNode(nodeType, frontmatter),
 			MemoryPath:  filepath.ToSlash(rel),
 			Content:     content,
 			ContentHash: fmt.Sprintf("sha256:%x", sum),
@@ -95,6 +97,17 @@ func nodeTypeForPath(path string) string {
 		return NodeTypeSection
 	}
 	return ""
+}
+
+func sessionIDForNode(nodeType string, frontmatter []string) string {
+	switch nodeType {
+	case NodeTypeSection:
+		return frontmatterValue(frontmatter, "session_id")
+	case NodeTypeSession, NodeTypeSegment:
+		return frontmatterValue(frontmatter, "id")
+	default:
+		return ""
+	}
 }
 
 func splitFrontmatter(content string) ([]string, string) {

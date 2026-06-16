@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marc-brede/recall/internal/llm"
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/llm"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func TestWithClientBuildsSchemaAndValidatesResult(t *testing.T) {

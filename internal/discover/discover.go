@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 type Options struct {

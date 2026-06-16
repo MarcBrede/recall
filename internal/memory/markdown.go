@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/marc-brede/recall/internal/summarize"
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/summarize"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func RenderSessionMarkdown(session *trace.Session, result *summarize.Result, sectionPathByID map[string]string) string {

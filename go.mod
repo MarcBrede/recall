@@ -1,4 +1,4 @@
-module github.com/marc-brede/recall
+module github.com/MarcBrede/recall
 
 go 1.23.0
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func TestFromFlatSessionRendersSessionRepresentation(t *testing.T) {

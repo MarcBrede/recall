@@ -3,10 +3,10 @@ package provider
 import (
 	"fmt"
 
-	"github.com/marc-brede/recall/internal/provider/claude"
-	"github.com/marc-brede/recall/internal/provider/codex"
-	"github.com/marc-brede/recall/internal/provider/pi"
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/provider/claude"
+	"github.com/MarcBrede/recall/internal/provider/codex"
+	"github.com/MarcBrede/recall/internal/provider/pi"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 // NewParser returns the parser for a detected source provider.

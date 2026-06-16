@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func TestSourceFromPath(t *testing.T) {

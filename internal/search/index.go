@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marc-brede/recall/internal/embed"
+	"github.com/MarcBrede/recall/internal/embed"
 	_ "modernc.org/sqlite"
 )
 
@@ -37,6 +37,7 @@ type IndexResult struct {
 
 type Result struct {
 	NodeType    string  `json:"node_type"`
+	SessionID   string  `json:"session_id"`
 	MemoryPath  string  `json:"memory_path"`
 	LastEventAt string  `json:"last_event_at"`
 	Score       float64 `json:"score"`
@@ -44,8 +45,9 @@ type Result struct {
 }
 
 type SearchOptions struct {
-	Limit     int
-	NodeTypes string
+	Limit      int
+	NodeTypes  string
+	SessionIDs []string
 }
 
 func Reindex(ctx context.Context, opts Options) (IndexResult, error) {
@@ -73,6 +75,10 @@ func Search(ctx context.Context, opts Options, query string, searchOpts SearchOp
 		limit = 10
 	}
 	nodeTypes, err := parseNodeTypeFilter(searchOpts.NodeTypes)
+	if err != nil {
+		return nil, err
+	}
+	sessionIDs, err := normalizeSessionIDs(searchOpts.SessionIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -109,34 +115,43 @@ func Search(ctx context.Context, opts Options, query string, searchOpts SearchOp
 	}
 
 	querySQL := `
-		select n.node_type, n.memory_path, n.content, n.last_event_at, e.vector
+		select n.node_type, n.session_id, n.memory_path, n.content, n.last_event_at, e.vector
 		from nodes n
 		join embeddings e on e.node_id = n.id`
-	var rows *sql.Rows
-	if len(nodeTypes) == 0 {
-		rows, err = db.QueryContext(ctx, querySQL)
-	} else {
-		placeholders := make([]string, 0, len(nodeTypes))
-		args := make([]any, 0, len(nodeTypes))
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, len(nodeTypes)+len(sessionIDs))
+	if len(nodeTypes) > 0 {
+		placeholders := placeholders(len(nodeTypes))
+		conditions = append(conditions, "n.node_type in ("+strings.Join(placeholders, ", ")+")")
 		for _, nodeType := range nodeTypes {
-			placeholders = append(placeholders, "?")
 			args = append(args, nodeType)
 		}
-		rows, err = db.QueryContext(ctx, querySQL+"\nwhere n.node_type in ("+strings.Join(placeholders, ", ")+")", args...)
 	}
+	if len(sessionIDs) > 0 {
+		placeholders := placeholders(len(sessionIDs))
+		conditions = append(conditions, "n.session_id in ("+strings.Join(placeholders, ", ")+")")
+		for _, sessionID := range sessionIDs {
+			args = append(args, sessionID)
+		}
+	}
+	if len(conditions) > 0 {
+		querySQL += "\nwhere " + strings.Join(conditions, " and ")
+	}
+	rows, err := db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var results []Result
+	results := make([]Result, 0)
 	for rows.Next() {
 		var nodeType string
+		var sessionID string
 		var memoryPath string
 		var content string
 		var lastEventAt string
 		var encoded []byte
-		if err := rows.Scan(&nodeType, &memoryPath, &content, &lastEventAt, &encoded); err != nil {
+		if err := rows.Scan(&nodeType, &sessionID, &memoryPath, &content, &lastEventAt, &encoded); err != nil {
 			return nil, err
 		}
 		vector, err := decodeVector(encoded)
@@ -146,6 +161,7 @@ func Search(ctx context.Context, opts Options, query string, searchOpts SearchOp
 		score := cosineSimilarity(embedding.Vector, vector)
 		results = append(results, Result{
 			NodeType:    nodeType,
+			SessionID:   sessionID,
 			MemoryPath:  memoryPath,
 			LastEventAt: lastEventAt,
 			Score:       score,
@@ -166,6 +182,14 @@ func Search(ctx context.Context, opts Options, query string, searchOpts SearchOp
 		results = results[:limit]
 	}
 	return results, nil
+}
+
+func placeholders(count int) []string {
+	values := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		values = append(values, "?")
+	}
+	return values
 }
 
 func parseNodeTypeFilter(filter string) ([]string, error) {
@@ -195,6 +219,31 @@ func parseNodeTypeFilter(filter string) ([]string, error) {
 		return nil, fmt.Errorf("search: node type filter %q did not contain a valid node type", filter)
 	}
 	return nodeTypes, nil
+}
+
+func normalizeSessionIDs(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	sessionIDs := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			sessionID := strings.TrimSpace(raw)
+			if sessionID == "" {
+				continue
+			}
+			if _, ok := seen[sessionID]; ok {
+				continue
+			}
+			seen[sessionID] = struct{}{}
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+	}
+	if len(sessionIDs) == 0 {
+		return nil, errors.New("search: session filter did not contain a valid session id")
+	}
+	return sessionIDs, nil
 }
 
 func indexScope(ctx context.Context, opts Options, scopeDir string, allowModelChange bool) (IndexResult, error) {
@@ -430,6 +479,7 @@ func ensureSchema(db *sql.DB) error {
 		`create table if not exists nodes (
 			id integer primary key,
 			node_type text not null,
+			session_id text not null default '',
 			memory_path text not null unique,
 			content text not null,
 			content_hash text not null,
@@ -447,7 +497,41 @@ func ensureSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	if err := ensureNodeSessionIDColumn(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`create index if not exists nodes_session_id_idx on nodes(session_id)`); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureNodeSessionIDColumn(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(nodes)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "session_id" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`alter table nodes add column session_id text not null default ''`)
+	return err
 }
 
 type existingNode struct {
@@ -478,14 +562,16 @@ where n.memory_path = ?`, memoryPath).Scan(&node.ID, &node.ContentHash, &hasEmbe
 
 func upsertNode(ctx context.Context, db *sql.DB, node nodeInput) (int64, error) {
 	_, err := db.ExecContext(ctx, `
-insert into nodes(node_type, memory_path, content, content_hash, last_event_at)
-values (?, ?, ?, ?, ?)
+insert into nodes(node_type, session_id, memory_path, content, content_hash, last_event_at)
+values (?, ?, ?, ?, ?, ?)
 on conflict(memory_path) do update set
 	node_type = excluded.node_type,
+	session_id = excluded.session_id,
 	content = excluded.content,
 	content_hash = excluded.content_hash,
 	last_event_at = excluded.last_event_at`,
 		node.NodeType,
+		node.SessionID,
 		node.MemoryPath,
 		node.Content,
 		node.ContentHash,

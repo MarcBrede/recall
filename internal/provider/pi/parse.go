@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 var errNotImplemented = errors.New("pi parser not implemented")

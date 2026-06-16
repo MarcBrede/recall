@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marc-brede/recall/internal/config"
-	"github.com/marc-brede/recall/internal/summarize"
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/config"
+	"github.com/MarcBrede/recall/internal/summarize"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func TestWriteSessionWritesMemoryDirectory(t *testing.T) {

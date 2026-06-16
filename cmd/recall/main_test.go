@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marc-brede/recall/internal/memory"
-	"github.com/marc-brede/recall/internal/trace"
+	"github.com/MarcBrede/recall/internal/memory"
+	"github.com/MarcBrede/recall/internal/trace"
 )
 
 func TestIngestLastSkipsAlreadyIndexedSession(t *testing.T) {
