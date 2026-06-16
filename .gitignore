@@ -1,7 +1,19 @@
-# Editor / IDE settings (machine-specific)
+# OS / editor settings (machine-specific)
+.DS_Store
 .vscode/
 .idea/
+*.swp
 
-# Local recall state and generated binary
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Local recall state and generated outputs
 .recall/
 /recall
+/dist/
+*.test
+coverage.out
