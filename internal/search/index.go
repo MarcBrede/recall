@@ -45,9 +45,11 @@ type Result struct {
 }
 
 type SearchOptions struct {
-	Limit      int
-	NodeTypes  string
-	SessionIDs []string
+	Limit        int
+	NodeTypes    string
+	SessionIDs   []string
+	Since        time.Time
+	LastSessions int
 }
 
 func Reindex(ctx context.Context, opts Options) (IndexResult, error) {
@@ -82,6 +84,9 @@ func Search(ctx context.Context, opts Options, query string, searchOpts SearchOp
 	if err != nil {
 		return nil, err
 	}
+	if err := validateSearchScope(searchOpts, sessionIDs); err != nil {
+		return nil, err
+	}
 
 	metadata, err := loadMetadata(opts.RecallDir)
 	if err != nil {
@@ -103,9 +108,17 @@ func Search(ctx context.Context, opts Options, query string, searchOpts SearchOp
 		return nil, err
 	}
 
+	sessionIDs, scoped, err := resolveSessionScope(ctx, db, searchOpts, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	if scoped && len(sessionIDs) == 0 {
+		return []Result{}, nil
+	}
+
 	embedding, err := opts.Client.Embed(ctx, embed.Request{
 		Model: opts.Model,
-		Input: query,
+		Input: embeddingInput(query),
 	})
 	if err != nil {
 		return nil, err
@@ -182,6 +195,26 @@ func Search(ctx context.Context, opts Options, query string, searchOpts SearchOp
 		results = results[:limit]
 	}
 	return results, nil
+}
+
+func validateSearchScope(searchOpts SearchOptions, sessionIDs []string) error {
+	if searchOpts.LastSessions < 0 {
+		return errors.New("search: last sessions must be >= 0")
+	}
+	scopeModes := 0
+	if len(sessionIDs) > 0 {
+		scopeModes++
+	}
+	if !searchOpts.Since.IsZero() {
+		scopeModes++
+	}
+	if searchOpts.LastSessions > 0 {
+		scopeModes++
+	}
+	if scopeModes > 1 {
+		return errors.New("search: use only one of session ids, since, or last sessions")
+	}
+	return nil
 }
 
 func placeholders(count int) []string {
@@ -398,11 +431,11 @@ func embedNodes(ctx context.Context, opts Options, jobs []embeddingJob) ([]embed
 			for job := range jobCh {
 				response, err := opts.Client.Embed(ctx, embed.Request{
 					Model: opts.Model,
-					Input: job.Node.Content,
+					Input: embeddingInput(job.Node.Content),
 				})
 				if err != nil {
 					select {
-					case errCh <- err:
+					case errCh <- fmt.Errorf("search: embed %s: %w", job.Node.MemoryPath, err):
 						cancel()
 					default:
 					}

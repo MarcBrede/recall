@@ -2,10 +2,12 @@ package search
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MarcBrede/recall/internal/embed"
 )
@@ -22,6 +24,26 @@ func (fakeEmbedClient) Embed(_ context.Context, req embed.Request) (embed.Respon
 	default:
 		return embed.Response{Model: req.Model, Vector: []float32{0.7, 0.7}}, nil
 	}
+}
+
+type countingEmbedClient struct {
+	calls int
+}
+
+func (client *countingEmbedClient) Embed(ctx context.Context, req embed.Request) (embed.Response, error) {
+	client.calls++
+	return fakeEmbedClient{}.Embed(ctx, req)
+}
+
+type maxInputEmbedClient struct {
+	maxRunes int
+}
+
+func (client maxInputEmbedClient) Embed(_ context.Context, req embed.Request) (embed.Response, error) {
+	if got := len([]rune(req.Input)); got > client.maxRunes {
+		return embed.Response{}, errors.New("input too large")
+	}
+	return embed.Response{Model: req.Model, Vector: []float32{1, 0}}, nil
 }
 
 func TestReindexAndSearchUsesMarkdownNodes(t *testing.T) {
@@ -244,6 +266,152 @@ summary: |
 	}
 }
 
+func TestReindexTruncatesEmbeddingInput(t *testing.T) {
+	recallDir := t.TempDir()
+	writeScopedSection(t, recallDir, "session-a", "2026-01-02T03:04:06Z", strings.Repeat("Alpha ", maxEmbeddingInputChars))
+
+	opts := Options{
+		RecallDir: recallDir,
+		Model:     "fake-embedding-model",
+		Client:    maxInputEmbedClient{maxRunes: maxEmbeddingInputChars},
+	}
+	if _, err := Reindex(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSearchFiltersBySinceAndTypeBeforeSimilarity(t *testing.T) {
+	recallDir := t.TempDir()
+	writeScopedSection(t, recallDir, "session-a", "2026-01-02T03:04:06Z", "Alpha implementation details for old session.")
+	writeScopedSection(t, recallDir, "session-b", "2026-01-03T03:04:06Z", "Alpha implementation details for middle session.")
+	writeScopedSection(t, recallDir, "session-c", "2026-01-04T03:04:06Z", "Alpha implementation details for newest session.")
+
+	opts := Options{
+		RecallDir: recallDir,
+		Model:     "fake-embedding-model",
+		Client:    fakeEmbedClient{},
+	}
+	if _, err := Reindex(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Search(context.Background(), opts, "alpha question", SearchOptions{
+		Limit:     10,
+		NodeTypes: NodeTypeSection,
+		Since:     time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(results))
+	}
+	for _, result := range results {
+		if result.NodeType != NodeTypeSection {
+			t.Fatalf("result node type = %q, want section", result.NodeType)
+		}
+		if result.SessionID == "session-a" {
+			t.Fatalf("old session was included in since-filtered results: %+v", result)
+		}
+	}
+}
+
+func TestSearchFiltersByLastSessionsBeforeSimilarity(t *testing.T) {
+	recallDir := t.TempDir()
+	writeScopedSection(t, recallDir, "session-a", "2026-01-02T03:04:06Z", "Alpha implementation details for old session.")
+	writeScopedSection(t, recallDir, "session-b", "2026-01-03T03:04:06Z", "Alpha implementation details for middle session.")
+	writeScopedSection(t, recallDir, "session-c", "2026-01-04T03:04:06Z", "Alpha implementation details for newest session.")
+
+	opts := Options{
+		RecallDir: recallDir,
+		Model:     "fake-embedding-model",
+		Client:    fakeEmbedClient{},
+	}
+	if _, err := Reindex(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Search(context.Background(), opts, "alpha question", SearchOptions{
+		Limit:        10,
+		NodeTypes:    NodeTypeSection,
+		LastSessions: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(results))
+	}
+	seen := make(map[string]bool)
+	for _, result := range results {
+		seen[result.SessionID] = true
+	}
+	if seen["session-a"] {
+		t.Fatal("oldest session was included in last-sessions-filtered results")
+	}
+	if !seen["session-b"] || !seen["session-c"] {
+		t.Fatalf("seen sessions = %+v, want session-b and session-c", seen)
+	}
+}
+
+func TestSearchRejectsCombinedSessionScopes(t *testing.T) {
+	recallDir := t.TempDir()
+	opts := Options{
+		RecallDir: recallDir,
+		Model:     "fake-embedding-model",
+		Client:    fakeEmbedClient{},
+	}
+
+	tests := []SearchOptions{
+		{SessionIDs: []string{"session-a"}, Since: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)},
+		{SessionIDs: []string{"session-a"}, LastSessions: 1},
+		{Since: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), LastSessions: 1},
+	}
+	for _, searchOpts := range tests {
+		_, err := Search(context.Background(), opts, "alpha question", searchOpts)
+		if err == nil {
+			t.Fatalf("Search() error = nil for options %+v, want error", searchOpts)
+		}
+		if !strings.Contains(err.Error(), "use only one") {
+			t.Fatalf("Search() error = %q, want only-one scope error", err)
+		}
+	}
+}
+
+func TestSearchEmptySessionScopeSkipsQueryEmbedding(t *testing.T) {
+	recallDir := t.TempDir()
+	writeScopedSection(t, recallDir, "session-a", "2026-01-02T03:04:06Z", "Alpha implementation details for old session.")
+
+	indexOpts := Options{
+		RecallDir: recallDir,
+		Model:     "fake-embedding-model",
+		Client:    fakeEmbedClient{},
+	}
+	if _, err := Reindex(context.Background(), indexOpts); err != nil {
+		t.Fatal(err)
+	}
+
+	counter := &countingEmbedClient{}
+	searchOpts := Options{
+		RecallDir: recallDir,
+		Model:     "fake-embedding-model",
+		Client:    counter,
+	}
+	results, err := Search(context.Background(), searchOpts, "alpha question", SearchOptions{
+		Limit: 10,
+		Since: time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results len = %d, want 0", len(results))
+	}
+	if counter.calls != 0 {
+		t.Fatalf("query embeddings = %d, want 0", counter.calls)
+	}
+}
+
 func TestEnsureSchemaAddsSessionIDColumn(t *testing.T) {
 	recallDir := t.TempDir()
 	db, err := openDB(recallDir)
@@ -326,6 +494,20 @@ summary: |
 	if got, want := result.Deleted, 1; got != want {
 		t.Fatalf("deleted = %d, want %d", got, want)
 	}
+}
+
+func writeScopedSection(t *testing.T, recallDir string, sessionID string, lastEventAt string, summary string) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(recallDir, "sessions", lastEventAt[:10]+"-codex-"+sessionID, "sections", "S001.md"), `---
+id: "S1"
+session_id: "`+sessionID+`"
+last_event_at: "`+lastEventAt+`"
+summary: |
+  `+summary+`
+---
+
+# S001
+`)
 }
 
 func writeTestFile(t *testing.T, path string, content string) {

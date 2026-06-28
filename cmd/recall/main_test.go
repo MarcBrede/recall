@@ -179,6 +179,51 @@ func TestSaveSuccessfulIngestResultsMergesWithLatestIndex(t *testing.T) {
 	}
 }
 
+func TestParseSearchSince(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Time
+	}{
+		{
+			name:  "date",
+			value: "2026-01-02",
+			want:  time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "rfc3339",
+			value: "2026-01-02T03:04:05Z",
+			want:  time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		},
+		{
+			name:  "offset",
+			value: "2026-01-02T04:04:05+01:00",
+			want:  time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSearchSince(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Equal(tt.want) {
+				t.Fatalf("parseSearchSince(%q) = %s, want %s", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSearchSinceRejectsInvalidValue(t *testing.T) {
+	_, err := parseSearchSince("next tuesday")
+	if err == nil {
+		t.Fatal("err is nil")
+	}
+	if !strings.Contains(err.Error(), "invalid --since") {
+		t.Fatalf("err = %q, want invalid --since", err)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

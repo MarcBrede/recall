@@ -1338,10 +1338,32 @@ func runSearch(args []string) error {
 	limit := flags.Int("limit", 10, "maximum number of results")
 	jsonOutput := flags.Bool("json", false, "emit results as JSON")
 	nodeType := flags.String("type", "", "restrict results to comma-separated node types: session, segment, section")
+	sinceRaw := flags.String("since", "", "restrict search to sessions at or after this time")
+	lastSessions := flags.Int("last-sessions", 0, "restrict search to the last N indexed sessions")
 	var sessionIDs stringListFlag
 	flags.Var(&sessionIDs, "session", "restrict results to a session id; repeatable and comma-separated")
 	flags.Var(&sessionIDs, "sessions", "restrict results to comma-separated session ids")
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *lastSessions < 0 {
+		return errors.New("search: --last-sessions must be >= 0")
+	}
+	scopeModes := 0
+	if len(sessionIDs) > 0 {
+		scopeModes++
+	}
+	if strings.TrimSpace(*sinceRaw) != "" {
+		scopeModes++
+	}
+	if *lastSessions > 0 {
+		scopeModes++
+	}
+	if scopeModes > 1 {
+		return errors.New("search: use only one of --session/--sessions, --since, or --last-sessions")
+	}
+	since, err := parseSearchSince(*sinceRaw)
+	if err != nil {
 		return err
 	}
 	query := strings.TrimSpace(strings.Join(flags.Args(), " "))
@@ -1358,9 +1380,11 @@ func runSearch(args []string) error {
 		return err
 	}
 	results, err := search.Search(context.Background(), opts, query, search.SearchOptions{
-		Limit:      *limit,
-		NodeTypes:  *nodeType,
-		SessionIDs: sessionIDs,
+		Limit:        *limit,
+		NodeTypes:    *nodeType,
+		SessionIDs:   sessionIDs,
+		Since:        since,
+		LastSessions: *lastSessions,
 	})
 	if err != nil {
 		return err
@@ -1374,6 +1398,20 @@ func runSearch(args []string) error {
 		}
 	}
 	return nil
+}
+
+func parseSearchSince(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("search: invalid --since %q; use RFC3339 timestamp or YYYY-MM-DD", value)
 }
 
 type stringListFlag []string
@@ -1618,5 +1656,5 @@ func sessionBatch(sessions []*trace.Session) trace.SessionBatch {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage:\n  recall parse <session.jsonl>\n  recall prepare [parsed-session.json|-]\n  recall render [prepared-session.json|-]\n  recall summarize [prepared-session.json|-]\n  recall write-memory <prepared-session.json> <summary.json>\n  recall ingest <session.jsonl>\n  recall ingest --last N\n  recall discover [--last N]\n  recall reindex\n  recall search [--limit N] [--json] [--type session|segment|section[,..]] [--session ID] [--sessions ID[,ID...]] <query>")
+	return fmt.Errorf("usage:\n  recall parse <session.jsonl>\n  recall prepare [parsed-session.json|-]\n  recall render [prepared-session.json|-]\n  recall summarize [prepared-session.json|-]\n  recall write-memory <prepared-session.json> <summary.json>\n  recall ingest <session.jsonl>\n  recall ingest --last N\n  recall discover [--last N]\n  recall reindex\n  recall search [--limit N] [--json] [--type session|segment|section[,..]] [--session ID] [--sessions ID[,ID...]] [--since TIME] [--last-sessions N] <query>")
 }

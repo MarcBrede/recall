@@ -47,13 +47,18 @@ Goal: answer the user's question in the fastest, most token-efficient way possib
 There are three retrieval modes.
 
 1. Semantic search with the binary:
-   Use this first. Keep normal searches at `--limit 3`; read the best returned Markdown file before any rewrite. If the right `session_id` is known, scope search immediately.
+   Use this first. Keep normal searches at `--limit 3`; read the best returned Markdown file before any rewrite.
+
+   Default to a session-scoped search. If the right `session_id` is known, use `--session`. If the user gives a date, recent timeframe, or asks about current work, use `--since`. Otherwise, especially when searching `--type section` directly, start with `--last-sessions 30`. Use an unscoped semantic search only when the question is clearly about older history across the whole memory corpus or the first scoped search is clearly too narrow.
 
    ```bash
-   recall search --type section --json --limit 3 "<query>"
-   recall search --type session,segment --json --limit 3 "<broad query>"
+   recall search --type section --json --limit 3 --last-sessions 30 "<query>"
+   recall search --type section --json --limit 3 --since 2026-06-20 "<recent query>"
+   recall search --type session,segment --json --limit 3 --last-sessions 50 "<broad recent query>"
    recall search --type section --json --limit 3 --session <session_id> "<query>"
    ```
+
+   Use only one session-scope option per search: `--session`/`--sessions`, `--since`, or `--last-sessions`. The `--type` filter can be combined with any one of them.
 
    Do at most one focused rewrite unless the result is clearly wrong. Do not raise limits above 5 unless needed for a broad comparison.
 
@@ -67,17 +72,17 @@ There are three retrieval modes.
 
 Choose the cheapest path that can answer the question. The goal is relevant evidence quickly, with minimal tokens.
 
-- **Semantic section search, then Markdown drilldown**: Search sections, open the best `memory_path`, then follow links or step line ranges inside that Markdown.
+- **Recent semantic section search, then Markdown drilldown**: Search recent sections by default, open the best `memory_path`, then follow links or step line ranges inside that Markdown. Prefer `--since` when the user gives a relevant date; otherwise use `--last-sessions 30`.
 
   ```bash
-  recall search --type section --json --limit 3 "<query>"
+  recall search --type section --json --limit 3 --last-sessions 30 "<query>"
   sed -n '1,120p' "$HOME/.recall/<memory_path>"
   ```
 
-- **Semantic session/segment search, then agentic Markdown**: use for broad questions or when you need to identify the right session first. Search sessions/segments semantically, then inspect that session's Markdown tree.
+- **Recent session/segment search, then agentic Markdown**: use for broad recent questions or when you need to identify the right session first. Search recent sessions/segments semantically, then inspect that session's Markdown tree.
 
   ```bash
-  recall search --type session,segment --json --limit 3 "<query>"
+  recall search --type session,segment --json --limit 3 --last-sessions 50 "<query>"
   recall search --type section --json --limit 3 --session <session_id> "<focused query>"
   sed -n '1,120p' "$HOME/.recall/sessions/<session>/session.md"
   rg -n "<term>" "$HOME/.recall/sessions/<session>" --glob '*.md'
@@ -90,3 +95,5 @@ Choose the cheapest path that can answer the question. The goal is relevant evid
 
   python3 -c 'import sys,itertools; p,a,b=sys.argv[1],int(sys.argv[2]),int(sys.argv[3]); print("".join(f"{n}\t{line[:1000].rstrip()}\n" for n,line in enumerate(itertools.islice(open(p),a-1,b),a)), end="")' <source_file> <start_line> <end_line>
   ```
+
+  Note that using semantic search is not always necessary. If the question is clearly better answerable by scanning recent session summaries, skip semantic search.
